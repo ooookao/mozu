@@ -10,18 +10,16 @@ Download an encoder in **モデル** before starting. Grant microphone and syste
 
 ## Development
 
-Build and run a signed development bundle. Use the same signing identity for each build so macOS can retain permissions.
+Use Xcode 26 or later to compile the app icon. Use the same signing identity for each development build so macOS can retain permissions.
 
 ```sh
 : "${MOZU_SIGNING_IDENTITY:?Set MOZU_SIGNING_IDENTITY to your code signing identity}"
 cargo build --locked --target-dir target/dev-build
 mozu_app="$HOME/Applications/Mozu Dev.app"
-mkdir -p "$mozu_app/Contents/MacOS"
-cp Info.plist "$mozu_app/Contents/Info.plist"
+scripts/package-macos.sh target/dev-build/debug/mozu "$mozu_app"
 plutil -replace CFBundleIdentifier -string local.mozu-audio.demo "$mozu_app/Contents/Info.plist"
 plutil -replace CFBundleName -string "Mozu Dev" "$mozu_app/Contents/Info.plist"
 plutil -insert CFBundleDisplayName -string "Mozu Dev" "$mozu_app/Contents/Info.plist"
-cp target/dev-build/debug/mozu "$mozu_app/Contents/MacOS/mozu"
 codesign --force --sign "$MOZU_SIGNING_IDENTITY" "$mozu_app"
 open "$mozu_app"
 ```

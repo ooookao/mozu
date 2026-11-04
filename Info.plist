@@ -6,6 +6,10 @@
   <string>mozu</string>
   <key>CFBundleIdentifier</key>
   <string>io.github.ooookao.mozu</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundleName</key>
   <string>Mozu</string>
   <key>CFBundlePackageType</key>
