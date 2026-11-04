@@ -23,3 +23,7 @@ plutil -insert CFBundleDisplayName -string "Mozu Dev" "$mozu_app/Contents/Info.p
 codesign --force --sign "$MOZU_SIGNING_IDENTITY" "$mozu_app"
 open "$mozu_app"
 ```
+
+## License
+
+Mozu is licensed under [AGPL-3.0-only](LICENSE). The UI in `crates/ui` is adapted from [G2V](https://github.com/g2vai/G2V).
