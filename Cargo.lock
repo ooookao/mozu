@@ -4100,7 +4100,11 @@ dependencies = [
  "realfft",
  "rtrb",
  "rusqlite",
+ "semver",
+ "serde",
+ "serde_json",
  "tempfile",
+ "ureq",
 ]
 
 [[package]]

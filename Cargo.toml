@@ -23,13 +23,17 @@ libc = "0.2"
 rtrb = "0.3.6"
 core-graphics = { version = "0.24", features = ["elcapitan"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAccessibility", "NSEvent", "NSGraphics", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSToolbar", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "block2", "objc2-quartz-core"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAccessibility", "NSApplication", "NSEvent", "NSGraphics", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSScreen", "NSToolbar", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "block2", "objc2-quartz-core"] }
 objc2-avf-audio = { version = "0.3", default-features = false, features = ["AVAudioApplication", "block2"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSProcessInfo", "NSString", "NSURL", "NSUserDefaults", "NSValue"] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = ["CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
 raw-window-handle = "0.6"
 realfft = "3.5"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+semver = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ureq = "3.4"
 
 [dev-dependencies]
 tempfile = "3.27"

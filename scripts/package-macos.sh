@@ -27,5 +27,7 @@ xcrun actool "$repo_root/assets/AppIcon.icon" \
 install -d "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 install -m 755 "$binary" "$bundle/Contents/MacOS/mozu"
 install -m 644 "$repo_root/Info.plist" "$bundle/Contents/Info.plist"
+version="$("$binary" --version)"
+/usr/libexec/PlistBuddy -c "Add CFBundleShortVersionString string $version" "$bundle/Contents/Info.plist"
 install -m 644 "$icon_build/resources/AppIcon.icns" "$icon_build/resources/Assets.car" \
     "$bundle/Contents/Resources/"

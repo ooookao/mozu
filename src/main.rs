@@ -3,6 +3,7 @@ mod history;
 mod island;
 mod material;
 mod meeting;
+mod menu;
 mod models;
 mod settings;
 
@@ -1584,7 +1585,12 @@ mod tests {
 
 fn main() {
     let mut args = std::env::args_os().skip(1);
-    let sample = if args.next().as_deref() == Some(std::ffi::OsStr::new("--sample")) {
+    let command = args.next();
+    if command.as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    let sample = if command.as_deref() == Some(std::ffi::OsStr::new("--sample")) {
         let Some(path) = args.next() else {
             eprintln!("Usage: mozu --sample <wav>");
             std::process::exit(2);
@@ -1643,6 +1649,7 @@ fn main() {
                     },
                 )
                 .expect("open Mozu window");
+            menu::install(console, cx);
             cx.activate(true);
             if sample.is_none() {
                 if let Err(error) = island::open(console, cx) {
