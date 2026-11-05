@@ -10,7 +10,7 @@ use g2v_ui::{
     ui::{Button, ButtonSize, ButtonVariant, IconName},
 };
 use gpui::{ClipboardItem, Context, IntoElement, div, prelude::*, px};
-use mozu_audio::{Error, Result, models::HaasVariant};
+use mozu_audio::{Error, Result, models::HaasVariant, vocabulary::VocabularyTerm};
 use rusqlite::{Connection, params};
 
 use crate::{Mode, MozuApp};
@@ -188,6 +188,12 @@ pub(crate) struct DictionaryEntry {
     pub(crate) id: i64,
     pub(crate) written: String,
     pub(crate) reading: Option<String>,
+}
+
+impl DictionaryEntry {
+    pub(crate) fn vocabulary_term(&self) -> Result<VocabularyTerm> {
+        VocabularyTerm::new(&self.written, self.reading.clone().into_iter().collect())
+    }
 }
 
 impl History {
@@ -368,6 +374,28 @@ impl History {
             .map_err(database_error)
     }
 
+    pub(crate) fn save_dictionary_entry_validated(
+        &self,
+        id: Option<i64>,
+        written: &str,
+        reading: Option<&str>,
+        validate: impl FnOnce(&[DictionaryEntry], &DictionaryEntry) -> Result<()>,
+    ) -> Result<()> {
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&self.0, rusqlite::TransactionBehavior::Immediate)
+                .map_err(database_error)?;
+        let mut entries = self.dictionary()?;
+        entries.retain(|entry| Some(entry.id) != id);
+        let candidate = DictionaryEntry {
+            id: id.unwrap_or(-1),
+            written: written.to_owned(),
+            reading: reading.map(str::to_owned),
+        };
+        validate(&entries, &candidate)?;
+        self.save_dictionary_entry(id, written, reading)?;
+        transaction.commit().map_err(database_error)
+    }
+
     pub(crate) fn save_dictionary_entry(
         &self,
         id: Option<i64>,
@@ -418,6 +446,45 @@ fn database_error(error: rusqlite::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_dictionary_validation_preserves_existing_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let history = History::open_file(&directory.path().join("history.sqlite3")).unwrap();
+        history
+            .save_dictionary_entry(None, "BaseUI", Some("べーすゆーあい"))
+            .unwrap();
+        let existing = history.dictionary().unwrap().pop().unwrap();
+
+        let rejected = history.save_dictionary_entry_validated(
+            None,
+            "Base UI",
+            Some("べーすゆーあい"),
+            |entries, candidate| {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0], existing);
+                assert_eq!(candidate.written, "Base UI");
+                Err(Error::Invalid("conflicting reading".into()))
+            },
+        );
+        assert!(rejected.is_err());
+        assert_eq!(history.dictionary().unwrap(), vec![existing]);
+
+        let id = history.dictionary().unwrap()[0].id;
+        let rejected = history.save_dictionary_entry_validated(
+            Some(id),
+            "Changed",
+            Some("へんこう"),
+            |entries, _| {
+                assert!(entries.is_empty());
+                Err(Error::Invalid("rejected update".into()))
+            },
+        );
+        assert!(rejected.is_err());
+        let unchanged = history.dictionary().unwrap().pop().unwrap();
+        assert_eq!(unchanged.written, "BaseUI");
+        assert_eq!(unchanged.reading.as_deref(), Some("べーすゆーあい"));
+    }
 
     #[test]
     fn dictionary_migration_keeps_existing_history() {

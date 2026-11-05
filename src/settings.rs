@@ -1,36 +1,77 @@
+use std::path::Path;
+
 use g2v_ui::{
-    theme::colors::G2VTheme,
-    ui::{Button, ButtonSize, ButtonVariant, IconName, Input, InputState, Switch},
+    theme::{colors::G2VTheme, typography},
+    ui::{
+        Button, ButtonSize, ButtonVariant, IconName, Input, InputSize, InputState, Switch,
+        TextStyleExt as _,
+    },
 };
 use gpui::{Context, Entity, FontWeight, Hsla, IntoElement, Window, div, prelude::*, px};
-use mozu_audio::{Error, Result, models::HaasVariant, vocabulary::VocabularyTerm};
+use gpui_base::input::InputEvent;
+use mozu_audio::{
+    Cancellation, Error, HaasEngine, Result,
+    models::HaasVariant,
+    vocabulary::{Vocabulary, VocabularyConfig},
+};
 use objc2_app_kit::NSWorkspace;
 use objc2_avf_audio::{AVAudioApplication, AVAudioApplicationRecordPermission};
 use objc2_foundation::{NSURL, NSUserDefaults, ns_string};
 
 use crate::{
-    MozuApp,
+    LoadedModels, MozuApp,
     history::{DictionaryEntry, History},
     island::Anchor,
     segment_track,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DictionaryForm {
+    Closed,
+    New,
+    Edit(i64),
+}
+
 pub(crate) struct DictionaryEditor {
     written: Entity<InputState>,
     reading: Entity<InputState>,
-    editing: Option<i64>,
+    search: Entity<InputState>,
+    form: DictionaryForm,
     entries: Vec<DictionaryEntry>,
     error: Option<String>,
+    saving: bool,
 }
 
 impl DictionaryEditor {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<MozuApp>) -> Self {
+        let written = cx.new(|cx| InputState::new(window, cx).placeholder("表記"));
+        let reading = cx.new(|cx| InputState::new(window, cx).placeholder("読み（任意）"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("単語を検索"));
+        cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify())
+            .detach();
+        for field in [&written, &reading] {
+            cx.subscribe_in(
+                field,
+                window,
+                |view, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::PressEnter { .. } => save_dictionary(view, window, cx),
+                    InputEvent::Change => {
+                        view.dictionary.error = None;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            )
+            .detach();
+        }
         Self {
-            written: cx.new(|cx| InputState::new(window, cx).placeholder("表記")),
-            reading: cx.new(|cx| InputState::new(window, cx).placeholder("読み（任意）")),
-            editing: None,
+            written,
+            reading,
+            search,
+            form: DictionaryForm::Closed,
             entries: Vec::new(),
             error: None,
+            saving: false,
         }
     }
 
@@ -44,10 +85,13 @@ impl DictionaryEditor {
         }
     }
 
-    fn set_fields(&mut self, id: Option<i64>, window: &mut Window, cx: &mut Context<MozuApp>) {
-        self.editing = id;
+    fn open(&mut self, form: DictionaryForm, window: &mut Window, cx: &mut Context<MozuApp>) {
+        self.form = form;
         self.error = None;
-        let entry = self.entries.iter().find(|entry| Some(entry.id) == id);
+        let entry = match form {
+            DictionaryForm::Edit(id) => self.entries.iter().find(|entry| entry.id == id),
+            _ => None,
+        };
         let written = entry.map(|entry| entry.written.as_str()).unwrap_or("");
         let reading = entry
             .and_then(|entry| entry.reading.as_deref())
@@ -56,38 +100,25 @@ impl DictionaryEditor {
             .update(cx, |state, cx| state.set_value(written, window, cx));
         self.reading
             .update(cx, |state, cx| state.set_value(reading, window, cx));
+        self.written.update(cx, |state, cx| state.focus(window, cx));
         cx.notify();
     }
 
-    fn save(&self, cx: &Context<MozuApp>) -> Result<()> {
-        let written = self.written.read(cx).value();
-        let reading = self.reading.read(cx).value();
-        let written = written.trim();
-        let reading = reading.trim();
-        if written.is_empty() {
-            return Err(Error::Invalid("表記を入力してください。".into()));
-        }
-        let reading = (!reading.is_empty()).then_some(reading);
-        VocabularyTerm::new(written, reading.map(str::to_owned).into_iter().collect())?;
-        History::open()?.save_dictionary_entry(self.editing, written, reading)
-    }
-
-    fn save_or_report(&mut self, window: &mut Window, cx: &mut Context<MozuApp>) {
-        match self.save(cx) {
-            Ok(()) => {
-                self.set_fields(None, window, cx);
-                self.refresh();
-            }
-            Err(error) => self.error = Some(dictionary_error(error)),
-        }
+    fn close(&mut self, window: &mut Window, cx: &mut Context<MozuApp>) {
+        self.form = DictionaryForm::Closed;
+        self.error = None;
+        self.written
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.reading
+            .update(cx, |state, cx| state.set_value("", window, cx));
         cx.notify();
     }
 
     fn remove(&mut self, id: i64, window: &mut Window, cx: &mut Context<MozuApp>) {
         match History::open().and_then(|history| history.delete_dictionary_entry(id)) {
             Ok(()) => {
-                if self.editing == Some(id) {
-                    self.set_fields(None, window, cx);
+                if self.form == DictionaryForm::Edit(id) {
+                    self.close(window, cx);
                 }
                 self.refresh();
             }
@@ -104,126 +135,418 @@ fn dictionary_error(error: Error) -> String {
     }
 }
 
-pub(crate) fn render_dictionary(
+fn compile_dictionary(
+    engine: &HaasEngine,
+    tokenizer: &Path,
+    entries: &[DictionaryEntry],
+) -> Result<()> {
+    let terms = entries
+        .iter()
+        .map(DictionaryEntry::vocabulary_term)
+        .collect::<Result<Vec<_>>>()?;
+    let vocabulary = Vocabulary::new(terms, VocabularyConfig::standard())?;
+    engine.compile_vocabulary(vocabulary, tokenizer).map(|_| ())
+}
+
+fn validate_dictionary(
+    engine: &HaasEngine,
+    tokenizer: &Path,
+    entries: &[DictionaryEntry],
+    candidate: &DictionaryEntry,
+) -> Result<()> {
+    if entries
+        .iter()
+        .any(|entry| entry.written == candidate.written)
+    {
+        return Err(Error::Invalid(
+            "同じ表記の単語がすでに登録されています。".into(),
+        ));
+    }
+    compile_dictionary(engine, tokenizer, std::slice::from_ref(candidate)).map_err(|error| {
+        eprintln!(
+            "Dictionary entry cannot be compiled: written={:?}, error={error}",
+            candidate.written
+        );
+        Error::Invalid("この表記または読みは、選択中のモデルでは使用できません。".into())
+    })?;
+    let mut terms = entries
+        .iter()
+        .map(DictionaryEntry::vocabulary_term)
+        .collect::<Result<Vec<_>>>()?;
+    terms.push(candidate.vocabulary_term()?);
+    let combined = Vocabulary::new(terms, VocabularyConfig::standard())?;
+    let Err(error) = engine.compile_vocabulary(combined, tokenizer) else {
+        return Ok(());
+    };
+    eprintln!(
+        "Dictionary validation failed: written={:?}, error={error}",
+        candidate.written
+    );
+    for entry in entries {
+        compile_dictionary(engine, tokenizer, std::slice::from_ref(entry))?;
+        let pair = Vocabulary::new(
+            vec![entry.vocabulary_term()?, candidate.vocabulary_term()?],
+            VocabularyConfig::standard(),
+        )?;
+        if let Err(conflict) = engine.compile_vocabulary(pair, tokenizer) {
+            eprintln!(
+                "Dictionary entries conflict: first={:?}, second={:?}, error={conflict}",
+                entry.written, candidate.written
+            );
+            return Err(Error::Invalid(format!(
+                "「{}」と同じ読みとして認識されます。表記を統一するか、読みを変更してください。",
+                entry.written
+            )));
+        }
+    }
+    Err(error)
+}
+
+fn save_dictionary(view: &mut MozuApp, window: &Window, cx: &mut Context<MozuApp>) {
+    if view.dictionary.saving || view.dictionary.form == DictionaryForm::Closed {
+        return;
+    }
+    if view.run.is_some() || view.models.is_busy() {
+        view.dictionary.error = Some("音声の処理が終了してから保存してください。".into());
+        cx.notify();
+        return;
+    }
+    let written = view.dictionary.written.read(cx).value().trim().to_owned();
+    let reading = view.dictionary.reading.read(cx).value().trim().to_owned();
+    if written.is_empty() {
+        view.dictionary.error = Some("表記を入力してください。".into());
+        cx.notify();
+        return;
+    }
+    let id = match view.dictionary.form {
+        DictionaryForm::Edit(id) => Some(id),
+        _ => None,
+    };
+    let reading = (!reading.is_empty()).then_some(reading);
+    let Some(root) = view.models.root.clone() else {
+        view.dictionary.error = Some("モデルの保存先を確認できませんでした。".into());
+        cx.notify();
+        return;
+    };
+    if !view.models.encoder_is_installed(view.preferences.variant) {
+        view.dictionary.error = Some("モデルをダウンロードしてから保存してください。".into());
+        cx.notify();
+        return;
+    }
+    let variant = view.preferences.variant;
+    let (sender, receiver) = async_channel::bounded(1);
+    view.dictionary.saving = true;
+    view.dictionary.error = None;
+    let job = Box::new(move |loaded: &mut Option<LoadedModels>| {
+        let result = (|| {
+            let models = LoadedModels::get(loaded, root, variant, &Cancellation::new())?;
+            let tokenizer = models.files.assets.with_file_name("tokenizer.model");
+            History::open()?.save_dictionary_entry_validated(
+                id,
+                &written,
+                reading.as_deref(),
+                |entries, candidate| {
+                    validate_dictionary(&models.engine, &tokenizer, entries, candidate)
+                },
+            )
+        })();
+        if sender.try_send(result).is_err() {
+            eprintln!("Dictionary validation result receiver was closed");
+        }
+    });
+    if view.recognition_jobs.send(job).is_err() {
+        view.dictionary.saving = false;
+        view.dictionary.error = Some("辞書を検証する処理を開始できませんでした。".into());
+        cx.notify();
+        return;
+    }
+    cx.spawn_in(window, async move |view, cx| {
+        let result = receiver.recv().await;
+        let _ = view.update_in(cx, |view, window, cx| {
+            view.dictionary.saving = false;
+            match result {
+                Ok(Ok(())) => {
+                    view.dictionary.close(window, cx);
+                    view.dictionary.refresh();
+                }
+                Ok(Err(error)) => view.dictionary.error = Some(dictionary_error(error)),
+                Err(error) => {
+                    view.dictionary.error = Some(format!("辞書の検証が中断されました。{error}"))
+                }
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+    cx.notify();
+}
+
+pub(crate) fn dictionary_add_button(view: &MozuApp, cx: &Context<MozuApp>) -> Button {
+    Button::new("add-dictionary-word")
+        .icon(IconName::PlusMedium)
+        .size(ButtonSize::IconSmall)
+        .variant(ButtonVariant::Ghost)
+        .accessibility_label("単語を追加")
+        .disabled(view.dictionary.saving || view.run.is_some() || view.models.is_busy())
+        .on_click(cx.listener(|view, _, window, cx| {
+            view.dictionary
+                .search
+                .update(cx, |state, cx| state.set_value("", window, cx));
+            view.dictionary.open(DictionaryForm::New, window, cx);
+        }))
+}
+
+fn dictionary_form(
     editor: &DictionaryEditor,
     theme: &G2VTheme,
     cx: &Context<MozuApp>,
 ) -> impl IntoElement {
-    let entries = editor.entries.iter().map(|entry| {
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .py_3()
+        .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
+            if event.keystroke.key == "escape" && !view.dictionary.saving {
+                view.dictionary.close(window, cx);
+                cx.stop_propagation();
+            }
+        }))
+        .child(
+            div()
+                .flex()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("表記"),
+                        )
+                        .child(
+                            Input::new(&editor.written)
+                                .size(InputSize::Small)
+                                .disabled(editor.saving)
+                                .invalid(editor.error.is_some())
+                                .accessibility_label("表記"),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("読み"),
+                        )
+                        .child(
+                            Input::new(&editor.reading)
+                                .size(InputSize::Small)
+                                .disabled(editor.saving)
+                                .invalid(editor.error.is_some())
+                                .accessibility_label("読み"),
+                        ),
+                ),
+        )
+        .children(editor.error.as_ref().map(|error| {
+            div()
+                .text_xs()
+                .text_color(theme.destructive)
+                .child(error.clone())
+        }))
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("cancel-word-edit")
+                        .label("キャンセル")
+                        .size(ButtonSize::Small)
+                        .variant(ButtonVariant::Ghost)
+                        .disabled(editor.saving)
+                        .on_click(
+                            cx.listener(|view, _, window, cx| view.dictionary.close(window, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("save-word")
+                        .label(if editor.saving { "確認中" } else { "保存" })
+                        .size(ButtonSize::Small)
+                        .disabled(
+                            editor.saving || editor.written.read(cx).value().trim().is_empty(),
+                        )
+                        .on_click(
+                            cx.listener(|view, _, window, cx| save_dictionary(view, window, cx)),
+                        ),
+                ),
+        )
+}
+
+pub(crate) fn render_dictionary(
+    view: &MozuApp,
+    theme: &G2VTheme,
+    cx: &Context<MozuApp>,
+) -> impl IntoElement {
+    let editor = &view.dictionary;
+    let query = editor.search.read(cx).value().trim().to_lowercase();
+    let entries = editor
+        .entries
+        .iter()
+        .filter(|entry| {
+            query.is_empty()
+                || entry.written.to_lowercase().contains(&query)
+                || entry
+                    .reading
+                    .as_ref()
+                    .is_some_and(|reading| reading.to_lowercase().contains(&query))
+                || editor.form == DictionaryForm::Edit(entry.id)
+        })
+        .collect::<Vec<_>>();
+    let empty = entries.is_empty();
+    let rows = entries.into_iter().map(|entry| {
         let id = entry.id;
+        let editing = editor.form == DictionaryForm::Edit(id);
         div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .py_2()
-            .border_t_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(entry.written.clone()),
-            )
-            .children(entry.reading.clone().map(|reading| {
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(theme.muted_foreground)
-                    .child(reading)
-            }))
-            .child(
-                Button::new(("edit-word", id as u64))
-                    .icon(IconName::PencilEdit)
-                    .size(ButtonSize::IconSmall)
-                    .variant(ButtonVariant::Ghost)
-                    .accessibility_label(format!("{}を編集", entry.written))
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        view.dictionary.set_fields(Some(id), window, cx)
-                    })),
-            )
-            .child(
-                Button::new(("delete-word", id as u64))
-                    .icon(IconName::Trash)
-                    .size(ButtonSize::IconSmall)
-                    .variant(ButtonVariant::Ghost)
-                    .accessibility_label(format!("{}を削除", entry.written))
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        view.dictionary.remove(id, window, cx)
-                    })),
-            )
+            .border_b_1()
+            .border_color(theme.border.opacity(0.5))
+            .when(editing, |row| row.child(dictionary_form(editor, theme, cx)))
+            .when(!editing, |row| {
+                row.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .min_h(px(42.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(entry.written.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.muted_foreground)
+                                .child(entry.reading.clone().unwrap_or_else(|| "—".into())),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .gap_1()
+                                .child(
+                                    Button::new(("edit-word", id as u64))
+                                        .icon(IconName::PencilEdit)
+                                        .size(ButtonSize::IconTiny)
+                                        .variant(ButtonVariant::Ghost)
+                                        .accessibility_label(format!("{}を編集", entry.written))
+                                        .disabled(editor.saving)
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.dictionary.open(
+                                                DictionaryForm::Edit(id),
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                                .child(
+                                    Button::new(("delete-word", id as u64))
+                                        .icon(IconName::Trash)
+                                        .size(ButtonSize::IconTiny)
+                                        .variant(ButtonVariant::Ghost)
+                                        .accessibility_label(format!("{}を削除", entry.written))
+                                        .disabled(editor.saving)
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.dictionary.remove(id, window, cx)
+                                        })),
+                                ),
+                        ),
+                )
+            })
     });
     div()
         .id("dictionary")
         .flex_1()
         .min_h_0()
-        .overflow_y_scroll()
+        .flex()
+        .flex_col()
         .px_6()
-        .py_3()
+        .text_style(typography::TEXT_13)
+        .font_weight(FontWeight::NORMAL)
+        .child(
+            div().flex_none().pb_3().child(
+                Input::new(&editor.search)
+                    .size(InputSize::Small)
+                    .accessibility_label("辞書を検索"),
+            ),
+        )
+        .children((editor.form == DictionaryForm::New).then(|| {
+            div()
+                .flex_none()
+                .border_b_1()
+                .border_color(theme.border)
+                .child(dictionary_form(editor, theme, cx))
+        }))
+        .children(
+            (editor.form == DictionaryForm::Closed)
+                .then(|| {
+                    editor.error.as_ref().map(|error| {
+                        div()
+                            .text_xs()
+                            .py_2()
+                            .text_color(theme.destructive)
+                            .child(error.clone())
+                    })
+                })
+                .flatten(),
+        )
         .child(
             div()
-                .max_w(px(520.0))
-                .mx_auto()
+                .flex_none()
                 .flex()
-                .flex_col()
+                .items_center()
                 .gap_3()
-                .child(
+                .py_2()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(div().flex_1().child("表記"))
+                .child(div().flex_1().child("読み"))
+                .child(div().w(px(52.0))),
+        )
+        .child(
+            div()
+                .id("dictionary-list")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .children(rows)
+                .children(empty.then(|| {
                     div()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("辞書"),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(Input::new(&editor.written).accessibility_label("表記")),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(Input::new(&editor.reading).accessibility_label("読み")),
-                        )
-                        .child(
-                            Button::new("save-word")
-                                .label(if editor.editing.is_some() {
-                                    "保存"
-                                } else {
-                                    "追加"
-                                })
-                                .on_click(cx.listener(|view, _, window, cx| {
-                                    view.dictionary.save_or_report(window, cx)
-                                })),
-                        ),
-                )
-                .children(editor.editing.map(|_| {
-                    div().flex().justify_end().child(
-                        Button::new("cancel-word-edit")
-                            .label("キャンセル")
-                            .size(ButtonSize::Small)
-                            .variant(ButtonVariant::Ghost)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.dictionary.set_fields(None, window, cx)
-                            })),
-                    )
-                }))
-                .children(
-                    editor
-                        .error
-                        .clone()
-                        .map(|error| div().text_sm().text_color(theme.destructive).child(error)),
-                )
-                .child(div().flex().flex_col().children(entries)),
+                        .py_6()
+                        .text_color(theme.muted_foreground)
+                        .child(if query.is_empty() {
+                            "単語はまだありません"
+                        } else {
+                            "一致する単語がありません"
+                        })
+                })),
         )
 }
-
 #[derive(Clone, Copy)]
 pub(crate) struct Preferences {
     pub(crate) variant: HaasVariant,

@@ -38,7 +38,7 @@ use mozu_audio::{
     recording::{RateConverter, Recording, SAMPLE_RATE},
     streaming::StreamingSession,
     vad::SileroVad,
-    vocabulary::{Vocabulary, VocabularyConfig, VocabularyTerm},
+    vocabulary::{Vocabulary, VocabularyConfig},
     window::AsrConfig,
 };
 
@@ -859,8 +859,8 @@ fn recognize(
     let engine = &models.engine;
     let terms = History::open()?
         .dictionary()?
-        .into_iter()
-        .map(|entry| VocabularyTerm::new(&entry.written, entry.reading.into_iter().collect()))
+        .iter()
+        .map(history::DictionaryEntry::vocabulary_term)
         .collect::<Result<Vec<_>>>()?;
     let vocabulary = if terms.is_empty() {
         None
@@ -1145,8 +1145,10 @@ impl Render for MozuApp {
         let dictating = active && self.mode == Mode::Dictation;
         let show_history = dictation || matches!(screen.phase, Phase::Idle);
         let can_copy = !dictation && !transcribing && !screen.transcript.text.is_empty();
-        let show_start_actions =
-            !dictation && !transcribing && show_history && !screen.history.has_detail();
+        let show_start_actions = page_mode == Some(Mode::Transcription)
+            && !transcribing
+            && show_history
+            && !screen.history.has_detail();
         let compact = window.viewport_size().width < px(680.0);
         let dictation_badge = dictating.then(|| {
             let stopping = matches!(self.screen.phase, Phase::Stopping);
@@ -1304,8 +1306,8 @@ impl Render for MozuApp {
             });
             settings::render(self, shortcut, &theme, cx)
         });
-        let dictionary = (self.page == Page::Dictionary)
-            .then(|| settings::render_dictionary(&self.dictionary, &theme, cx));
+        let dictionary =
+            (self.page == Page::Dictionary).then(|| settings::render_dictionary(self, &theme, cx));
         let history = show_history.then(|| {
             if dictation && screen.history.is_empty() {
                 let empty = Empty::new("音声入力の履歴はありません").media(
@@ -1440,6 +1442,12 @@ impl Render for MozuApp {
                 )))
         });
         let recognition_title = page_mode.map(Mode::title);
+        let page_title = match self.page {
+            Page::Dictionary => Some("辞書"),
+            _ => recognition_title,
+        };
+        let dictionary_add =
+            (self.page == Page::Dictionary).then(|| settings::dictionary_add_button(self, cx));
         let recognition = recognition_title.map(|_| {
             div()
                 .flex()
@@ -1489,12 +1497,12 @@ impl Render for MozuApp {
                     .bg(material)
                     .min_w_0()
                     .min_h_0()
-                    .when(recognition_title.is_none(), |content| {
+                    .when(page_title.is_none(), |content| {
                         content.pt(px(TITLEBAR_HEIGHT))
                     })
                     .flex()
                     .flex_col()
-                    .children(recognition_title.map(|title| {
+                    .children(page_title.map(|title| {
                         div()
                             .flex()
                             .flex_none()
@@ -1517,6 +1525,7 @@ impl Render for MozuApp {
                                     .gap(px(12.0))
                                     .flex_none()
                                     .children(recording_status)
+                                    .children(dictionary_add)
                                     .children(open_button)
                                     .children(source_picker)
                                     .children(record)
