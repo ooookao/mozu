@@ -18,7 +18,7 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardItem,
-    NSPasteboardTypeString, NSPasteboardWriting,
+    NSPasteboardTypeString, NSPasteboardWriting, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSString, NSUserDefaults, ns_string};
 
@@ -28,6 +28,7 @@ unsafe extern "C" {
     fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> u8;
     static kAXTrustedCheckOptionPrompt: CFStringRef;
     fn AXUIElementCreateSystemWide() -> CFTypeRef;
+    fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
     fn AXUIElementCopyAttributeValue(
         element: CFTypeRef,
         attribute: CFStringRef,
@@ -72,16 +73,30 @@ pub enum Key {
     Escape,
 }
 
-pub struct KeyMonitor(Vec<Retained<AnyObject>>);
+pub struct KeyMonitor {
+    monitors: Vec<Retained<AnyObject>>,
+    interaction_epoch: Rc<Cell<u64>>,
+}
 
 impl KeyMonitor {
     pub fn install(sender: Sender<Key>) -> Option<Self> {
-        let mask = NSEventMask::FlagsChanged | NSEventMask::KeyDown;
+        let mouse_down =
+            NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown;
+        let mask = NSEventMask::FlagsChanged | NSEventMask::KeyDown | mouse_down;
         let pressed = Rc::new(Cell::new(false));
+        let interaction_epoch = Rc::new(Cell::new(0u64));
+        let event_epoch = interaction_epoch.clone();
         let handler = move |event: NonNull<NSEvent>| {
             // AppKit owns the event for the duration of this callback.
             let event = unsafe { event.as_ref() };
-            let key = if event.r#type() == NSEventType::FlagsChanged && event.keyCode() == 63 {
+            let event_type = event.r#type();
+            if event_type != NSEventType::FlagsChanged {
+                event_epoch.set(event_epoch.get().wrapping_add(1));
+                if event_type != NSEventType::KeyDown {
+                    return;
+                }
+            }
+            let key = if event_type == NSEventType::FlagsChanged && event.keyCode() == 63 {
                 let down = event
                     .modifierFlags()
                     .contains(NSEventModifierFlags::Function);
@@ -112,45 +127,87 @@ impl KeyMonitor {
                 }),
             )
         };
-        let monitor = Self(global.into_iter().chain(local).collect());
-        (monitor.0.len() == 2).then_some(monitor)
+        let monitor = Self {
+            monitors: global.into_iter().chain(local).collect(),
+            interaction_epoch,
+        };
+        (monitor.monitors.len() == 2).then_some(monitor)
+    }
+
+    pub fn capture_target(&self) -> Option<PasteTarget> {
+        if !is_trusted() || unsafe { IsSecureEventInputEnabled() } != 0 {
+            return None;
+        }
+        let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        let pid = frontmost.processIdentifier();
+        if pid <= 0 || pid as u32 == std::process::id() {
+            return None;
+        }
+        let focus = if let Some(element) = focused_element().filter(|element| {
+            let mut element_pid = 0;
+            let status = unsafe { AXUIElementGetPid(element.as_CFTypeRef(), &mut element_pid) };
+            status == 0 && element_pid == pid
+        }) {
+            PasteFocus::Element(element)
+        } else if frontmost.bundleIdentifier().as_deref() == Some(ns_string!("com.google.Chrome")) {
+            // Chrome can omit the focused web control from macOS accessibility.
+            PasteFocus::ChromeWindow {
+                window: focused_window(pid)?,
+                epoch: self.interaction_epoch.clone(),
+                captured_epoch: self.interaction_epoch.get(),
+            }
+        } else {
+            return None;
+        };
+        Some(PasteTarget { focus, pid })
     }
 }
 
 impl Drop for KeyMonitor {
     fn drop(&mut self) {
-        for monitor in &self.0 {
+        for monitor in &self.monitors {
             unsafe { NSEvent::removeMonitor(monitor) };
         }
     }
 }
 
+enum PasteFocus {
+    Element(CFType),
+    ChromeWindow {
+        window: CFType,
+        epoch: Rc<Cell<u64>>,
+        captured_epoch: u64,
+    },
+}
+
 pub struct PasteTarget {
-    element: CFType,
+    focus: PasteFocus,
     pid: i32,
 }
 
 impl PasteTarget {
-    pub fn capture() -> Option<Self> {
-        if !is_trusted() || unsafe { IsSecureEventInputEnabled() } != 0 {
-            return None;
+    fn still_focused(&self) -> bool {
+        match &self.focus {
+            PasteFocus::Element(element) => focused_element().as_ref() == Some(element),
+            PasteFocus::ChromeWindow {
+                window,
+                epoch,
+                captured_epoch,
+            } => {
+                epoch.get() == *captured_epoch
+                    && NSWorkspace::sharedWorkspace()
+                        .frontmostApplication()
+                        .is_some_and(|app| app.processIdentifier() == self.pid)
+                    && focused_window(self.pid).as_ref() == Some(window)
+            }
         }
-        let element = focused_element()?;
-        let mut pid = 0;
-        if unsafe { AXUIElementGetPid(element.as_CFTypeRef(), &mut pid) } != 0
-            || pid <= 0
-            || pid as u32 == std::process::id()
-        {
-            return None;
-        }
-        Some(Self { element, pid })
     }
 
     pub fn paste(&self, text: &str) -> Result<ClipboardRestore, &'static str> {
         if !is_trusted() || unsafe { IsSecureEventInputEnabled() } != 0 {
             return Err("元の入力欄に貼り付けできませんでした");
         }
-        if focused_element().as_ref() != Some(&self.element) {
+        if !self.still_focused() {
             return Err("入力先が変わったため、貼り付けを見送りました");
         }
         let source = CGEventSource::new(CGEventSourceStateID::Private)
@@ -162,7 +219,7 @@ impl PasteTarget {
         let board = NSPasteboard::generalPasteboard();
         let before = board.changeCount();
         let items = snapshot(&board)?;
-        if board.changeCount() != before || focused_element().as_ref() != Some(&self.element) {
+        if board.changeCount() != before || !self.still_focused() {
             return Err("入力先またはクリップボードが変わりました");
         }
         board.clearContents();
@@ -183,13 +240,21 @@ impl PasteTarget {
 }
 
 fn focused_element() -> Option<CFType> {
-    // Both AX calls return retained Core Foundation values on success.
     let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
-    let attribute = CFString::new("AXFocusedUIElement");
+    ax_attribute(&system, "AXFocusedUIElement")
+}
+
+fn focused_window(pid: i32) -> Option<CFType> {
+    let application = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) };
+    ax_attribute(&application, "AXFocusedWindow")
+}
+
+fn ax_attribute(element: &CFType, name: &str) -> Option<CFType> {
+    let attribute = CFString::new(name);
     let mut value: *const c_void = std::ptr::null();
     let result = unsafe {
         AXUIElementCopyAttributeValue(
-            system.as_CFTypeRef(),
+            element.as_CFTypeRef(),
             attribute.as_concrete_TypeRef(),
             &mut value,
         )

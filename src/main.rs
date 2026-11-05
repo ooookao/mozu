@@ -699,7 +699,11 @@ impl MozuApp {
                                 && !press.interrupted
                             {
                                 press.recording = true;
-                                view.start(Input::Dictation, PasteTarget::capture(), window, cx);
+                                let target = view
+                                    .key_monitor
+                                    .as_ref()
+                                    .and_then(KeyMonitor::capture_target);
+                                view.start(Input::Dictation, target, window, cx);
                             }
                         });
                     })
@@ -714,7 +718,13 @@ impl MozuApp {
                     self.request_finish(cx);
                 } else if !press.interrupted && press.started.elapsed() < HOLD_THRESHOLD {
                     match self.run.as_ref().map(|run| &run.input) {
-                        None => self.start(Input::Dictation, PasteTarget::capture(), window, cx),
+                        None => {
+                            let target = self
+                                .key_monitor
+                                .as_ref()
+                                .and_then(KeyMonitor::capture_target);
+                            self.start(Input::Dictation, target, window, cx);
+                        }
                         Some(Input::Dictation) => self.request_finish(cx),
                         _ => {}
                     }
