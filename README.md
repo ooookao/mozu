@@ -14,13 +14,18 @@ Use Xcode 26 or later to compile the app icon. Use the same signing identity for
 
 ```sh
 : "${MOZU_SIGNING_IDENTITY:?Set MOZU_SIGNING_IDENTITY to your code signing identity}"
+scripts/prepare-sparkle.sh
 cargo build --locked --target-dir target/dev-build
 mozu_app="$HOME/Applications/Mozu Dev.app"
 scripts/package-macos.sh target/dev-build/debug/mozu "$mozu_app"
 plutil -replace CFBundleIdentifier -string local.mozu-audio.demo "$mozu_app/Contents/Info.plist"
 plutil -replace CFBundleName -string "Mozu Dev" "$mozu_app/Contents/Info.plist"
 plutil -insert CFBundleDisplayName -string "Mozu Dev" "$mozu_app/Contents/Info.plist"
-codesign --force --sign "$MOZU_SIGNING_IDENTITY" "$mozu_app"
+plutil -replace SUEnableAutomaticChecks -bool false "$mozu_app/Contents/Info.plist"
+plutil -replace SUAutomaticallyUpdate -bool false "$mozu_app/Contents/Info.plist"
+plutil -create xml1 target/dev-build/Entitlements.plist
+plutil -insert com.apple.security.device.audio-input -bool true target/dev-build/Entitlements.plist
+scripts/sign-macos.sh "$mozu_app" "$MOZU_SIGNING_IDENTITY" target/dev-build/Entitlements.plist
 open "$mozu_app"
 ```
 

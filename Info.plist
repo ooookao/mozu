@@ -16,6 +16,18 @@
   <string>APPL</string>
   <key>CFBundleVersion</key>
   <string>1</string>
+  <key>SUFeedURL</key>
+  <string>https://github.com/ooookao/mozu/releases/latest/download/appcast.xml</string>
+  <key>SUPublicEDKey</key>
+  <string>A56kojzXfLnUIj+F9s0F34pTjAHtdaB12ijtKkgE8Qg=</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
+  <key>SUVerifyUpdateBeforeExtraction</key>
+  <true/>
+  <key>SURequireSignedFeed</key>
+  <true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>マイク入力をリアルタイムで文字起こしするために使用します。</string>
   <key>NSAudioCaptureUsageDescription</key>

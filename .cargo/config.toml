@@ -1,0 +1,3 @@
+[env]
+SPARKLE_FRAMEWORK_PATH = { value = "target/sparkle", relative = true }
+DYLD_FRAMEWORK_PATH = { value = "target/sparkle", relative = true }

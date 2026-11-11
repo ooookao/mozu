@@ -715,7 +715,7 @@ pub(crate) fn render(
                         div()
                             .text_sm()
                             .children(shortcut)
-                            .children(demo.key_monitor.is_some().then(|| "Fn")),
+                            .children(demo.key_monitor.is_some().then_some("Fn")),
                     ),
                 ),
         )

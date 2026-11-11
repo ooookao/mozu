@@ -6,6 +6,7 @@ mod meeting;
 mod menu;
 mod models;
 mod settings;
+mod updater;
 
 use std::{
     path::{Path, PathBuf},
@@ -129,6 +130,7 @@ struct Run {
     cancellation: Cancellation,
     discard: bool,
     model_ready: bool,
+    _update_activity: updater::Activity,
 }
 
 struct KeyPress {
@@ -303,7 +305,7 @@ impl MozuApp {
     }
 
     fn open_file(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.run.is_some() || self.models.is_busy() {
+        if self.run.is_some() || self.models.is_busy() || updater::restart_requested(cx) {
             return;
         }
         let receiver = cx.prompt_for_paths(PathPromptOptions {
@@ -415,6 +417,7 @@ impl MozuApp {
             cancellation: cancellation.clone(),
             discard: false,
             model_ready: false,
+            _update_activity: updater::protect(cx),
         });
         let variant = self.preferences.variant;
         let cache_path = self.models.root.clone();
@@ -496,12 +499,14 @@ impl MozuApp {
                             Ok(Update::Finished { text, history_id }) => {
                                 if view.run.as_ref().is_some_and(|run| run.discard) {
                                     if let Ok(Some(id)) = history_id {
+                                        let activity = updater::protect(cx);
                                         thread::spawn(move || {
                                             if let Err(error) = History::open()
                                                 .and_then(|history| history.discard(id))
                                             {
                                                 eprintln!("Could not discard dictation: {error}");
                                             }
+                                            drop(activity);
                                         });
                                     }
                                     view.clear_cancelled();
@@ -564,22 +569,27 @@ impl MozuApp {
                     let result = dictation::paste_text(&self.screen.transcript.text);
                     let sent = result.is_ok();
                     match result {
-                        Ok(clipboard) => cx
-                            .spawn(async move |_, cx| {
+                        Ok(clipboard) => {
+                            let activity = updater::protect(cx);
+                            cx.spawn(async move |_, cx| {
                                 cx.background_executor()
                                     .timer(Duration::from_millis(350))
                                     .await;
                                 clipboard.restore();
+                                drop(activity);
                             })
-                            .detach(),
+                            .detach();
+                        }
                         Err(message) => phase = Phase::Failed(message.into()),
                     }
+                    let activity = updater::protect(cx);
                     thread::spawn(move || {
                         if let Err(error) =
                             History::open().and_then(|history| history.record_paste(id, sent))
                         {
                             eprintln!("Could not save paste status: {error}");
                         }
+                        drop(activity);
                     });
                 }
             }
@@ -1530,48 +1540,6 @@ fn segment_track(theme: &G2VTheme) -> gpui::Div {
         .bg(theme.control_track_fill())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stopping_before_capture_reports_missing_audio_without_loading_models() {
-        let (stop, requests) = mpsc::channel();
-        stop.send(()).unwrap();
-        let (updates, _) = mpsc::channel();
-
-        let error = open_feed(&Input::Dictation, requests, &updates, &Cancellation::new())
-            .err()
-            .expect("capture stopped without audio");
-
-        assert!(
-            matches!(error, Error::Invalid(message) if message == "マイクから音声を取得できませんでした")
-        );
-    }
-
-    #[test]
-    fn dark_control_fills_keep_their_contrast_over_window_material() {
-        let theme = G2VTheme::for_appearance(gpui::WindowAppearance::Dark);
-        let track = theme.control_track_fill();
-        let hover = theme.control_hover_fill();
-        let selected = theme.control_selected_fill();
-        assert_eq!([track.a, hover.a, selected.a], [1.0; 3]);
-        assert!(track.l < hover.l && hover.l < selected.l);
-    }
-
-    #[test]
-    fn provisional_revision_preserves_confirmed_text_and_final_text_replaces_it() {
-        let mut transcript = Transcript::default();
-        transcript.update("お茶です。".into(), "あした".into());
-        transcript.update("お茶です。".into(), "明日".into());
-        assert_eq!(transcript.text, "お茶です。");
-        assert_eq!(transcript.provisional, "明日");
-        transcript.finish("お茶です。明日。".into());
-        assert_eq!(transcript.text, "お茶です。明日。");
-        assert!(transcript.provisional.is_empty());
-    }
-}
-
 fn main() {
     let mut args = std::env::args_os().skip(1);
     let command = args.next();
@@ -1595,6 +1563,7 @@ fn main() {
             typography::register_fonts(cx);
             typography::install(cx);
             theme::install(cx.window_appearance(), cx);
+            updater::install(cx);
             let bounds = Bounds::centered(None, size(px(760.0), px(540.0)), cx);
             let console = cx
                 .open_window(
@@ -1647,4 +1616,46 @@ fn main() {
                 dictation::request_accessibility_permission_on_first_launch();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopping_before_capture_reports_missing_audio_without_loading_models() {
+        let (stop, requests) = mpsc::channel();
+        stop.send(()).unwrap();
+        let (updates, _) = mpsc::channel();
+
+        let error = open_feed(&Input::Dictation, requests, &updates, &Cancellation::new())
+            .err()
+            .expect("capture stopped without audio");
+
+        assert!(
+            matches!(error, Error::Invalid(message) if message == "マイクから音声を取得できませんでした")
+        );
+    }
+
+    #[test]
+    fn dark_control_fills_keep_their_contrast_over_window_material() {
+        let theme = G2VTheme::for_appearance(gpui::WindowAppearance::Dark);
+        let track = theme.control_track_fill();
+        let hover = theme.control_hover_fill();
+        let selected = theme.control_selected_fill();
+        assert_eq!([track.a, hover.a, selected.a], [1.0; 3]);
+        assert!(track.l < hover.l && hover.l < selected.l);
+    }
+
+    #[test]
+    fn provisional_revision_preserves_confirmed_text_and_final_text_replaces_it() {
+        let mut transcript = Transcript::default();
+        transcript.update("お茶です。".into(), "あした".into());
+        transcript.update("お茶です。".into(), "明日".into());
+        assert_eq!(transcript.text, "お茶です。");
+        assert_eq!(transcript.provisional, "明日");
+        transcript.finish("お茶です。明日。".into());
+        assert_eq!(transcript.text, "お茶です。明日。");
+        assert!(transcript.provisional.is_empty());
+    }
 }

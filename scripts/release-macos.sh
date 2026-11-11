@@ -29,6 +29,15 @@ if [[ -e "$out" ]]; then
 fi
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$repo_root/target}"
+sparkle_dir="$(scripts/prepare-sparkle.sh)"
+export DYLD_FRAMEWORK_PATH="$sparkle_dir"
+sparkle_account="io.github.ooookao.mozu"
+public_key="$("$sparkle_dir/bin/generate_keys" --account "$sparkle_account" -p)"
+expected_key="$(/usr/libexec/PlistBuddy -c 'Print SUPublicEDKey' Info.plist)"
+if [[ "$public_key" != "$expected_key" ]]; then
+    echo "The Sparkle signing key does not match SUPublicEDKey in Info.plist." >&2
+    exit 1
+fi
 cargo test --locked
 cargo build --release --locked
 binary="$CARGO_TARGET_DIR/release/mozu"
@@ -56,9 +65,7 @@ scripts/package-macos.sh "$binary" "$app"
 entitlements="$stage/Entitlements.plist"
 plutil -create xml1 "$entitlements"
 /usr/libexec/PlistBuddy -c "Add com.apple.security.device.audio-input bool true" "$entitlements"
-codesign --force --options runtime --timestamp --entitlements "$entitlements" \
-    --sign "$MOZU_SIGN_IDENTITY" "$app"
-codesign --verify --deep --strict "$app"
+scripts/sign-macos.sh "$app" "$MOZU_SIGN_IDENTITY" "$entitlements"
 
 ditto -c -k --keepParent "$app" "$stage/app-for-notarization.zip"
 notarize "$stage/app-for-notarization.zip"
@@ -78,6 +85,15 @@ xcrun stapler staple "$dmg"
 xcrun stapler validate "$dmg"
 spctl --assess --type open --context context:primary-signature -vv "$dmg"
 hdiutil verify -quiet "$dmg"
+
+mkdir "$stage/feed"
+cp "$stage/release/$name.zip" "$stage/feed/"
+"$sparkle_dir/bin/generate_appcast" \
+    --account "$sparkle_account" \
+    --download-url-prefix "https://github.com/ooookao/mozu/releases/download/$tag/" \
+    --maximum-deltas 0 --disable-signing-warning "$stage/feed"
+cp "$stage/feed/appcast.xml" "$stage/release/appcast.xml"
+"$sparkle_dir/bin/sign_update" --account "$sparkle_account" --verify "$stage/release/appcast.xml"
 
 mv "$stage/release" "$out"
 printf 'Release assets: %s\n' "$out"

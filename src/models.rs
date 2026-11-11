@@ -149,6 +149,7 @@ struct ModelJob {
     model: Model,
     action: ModelAction,
     cancellation: Cancellation,
+    _update_activity: crate::updater::Activity,
 }
 
 pub(crate) struct ModelManager {
@@ -199,7 +200,7 @@ impl ModelManager {
         window: &Window,
         cx: &mut Context<MozuApp>,
     ) {
-        if demo.run.is_some() || demo.models.is_busy() {
+        if demo.run.is_some() || demo.models.is_busy() || crate::updater::restart_requested(cx) {
             return;
         }
         let Some(root) = demo.models.root.clone() else {
@@ -213,6 +214,7 @@ impl ModelManager {
             model,
             action,
             cancellation: cancellation.clone(),
+            _update_activity: crate::updater::protect(cx),
         });
         demo.models.confirm_delete = None;
         demo.models.error = None;

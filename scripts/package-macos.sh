@@ -14,6 +14,9 @@ if [[ ! -x "$binary" || "$bundle" != *.app ]]; then
     exit 2
 fi
 
+sparkle_dir="$("$repo_root/scripts/prepare-sparkle.sh")"
+export DYLD_FRAMEWORK_PATH="$sparkle_dir"
+
 icon_build="$(mktemp -d)"
 trap 'rm -rf "$icon_build"' EXIT
 mkdir "$icon_build/resources"
@@ -24,7 +27,10 @@ xcrun actool "$repo_root/assets/AppIcon.icon" \
     --app-icon AppIcon \
     --output-partial-info-plist "$icon_build/Info.plist"
 
-install -d "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+install -d "$bundle/Contents/MacOS" "$bundle/Contents/Resources" "$bundle/Contents/Frameworks"
+ditto "$sparkle_dir/Sparkle.framework" "$bundle/Contents/Frameworks/Sparkle.framework"
+install -m 644 "$sparkle_dir/LICENSE" "$bundle/Contents/Resources/Sparkle-LICENSE"
+install -m 644 "$repo_root/assets/licenses/sparkle-updater.txt" "$bundle/Contents/Resources/sparkle-updater-LICENSE"
 install -m 755 "$binary" "$bundle/Contents/MacOS/mozu"
 install -m 644 "$repo_root/Info.plist" "$bundle/Contents/Info.plist"
 version="$("$binary" --version)"
