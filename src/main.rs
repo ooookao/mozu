@@ -44,7 +44,7 @@ use mozu_audio::{
 
 use objc2_avf_audio::AVAudioApplicationRecordPermission;
 
-use dictation::{Key, KeyMonitor, PasteTarget};
+use dictation::{Key, KeyMonitor};
 use history::{History, HistoryKind, HistoryView};
 use material::WindowMaterial;
 use meeting::MeetingRecording;
@@ -127,7 +127,6 @@ struct Run {
     input: Input,
     stop: Sender<()>,
     cancellation: Cancellation,
-    target: Option<PasteTarget>,
     discard: bool,
     model_ready: bool,
 }
@@ -318,7 +317,7 @@ impl MozuApp {
             let _ = view.update_in(cx, |view, window, cx| match result {
                 Ok(Ok(Some(paths))) => {
                     if let Some(path) = paths.into_iter().next() {
-                        view.start(Input::File(path), None, window, cx);
+                        view.start(Input::File(path), window, cx);
                     }
                 }
                 Ok(Ok(None)) => {}
@@ -362,13 +361,7 @@ impl MozuApp {
         }));
     }
 
-    fn start(
-        &mut self,
-        input: Input,
-        target: Option<PasteTarget>,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn start(&mut self, input: Input, window: &Window, cx: &mut Context<Self>) {
         if self.run.is_some() || self.models.is_busy() {
             return;
         }
@@ -420,7 +413,6 @@ impl MozuApp {
             input: input.clone(),
             stop,
             cancellation: cancellation.clone(),
-            target,
             discard: false,
             model_ready: false,
         });
@@ -564,16 +556,12 @@ impl MozuApp {
         match history_id {
             Err(error) => phase = Phase::Failed(error.to_string()),
             Ok(Some(id)) => {
-                if let Some(run) = self
+                if self
                     .run
-                    .as_mut()
-                    .filter(|run| run.input == Input::Dictation)
+                    .as_ref()
+                    .is_some_and(|run| run.input == Input::Dictation)
                 {
-                    let result = run
-                        .target
-                        .take()
-                        .ok_or("元の入力欄を確認できませんでした")
-                        .and_then(|target| target.paste(&self.screen.transcript.text));
+                    let result = dictation::paste_text(&self.screen.transcript.text);
                     let sent = result.is_ok();
                     match result {
                         Ok(clipboard) => cx
@@ -700,11 +688,7 @@ impl MozuApp {
                                 && !press.interrupted
                             {
                                 press.recording = true;
-                                let target = view
-                                    .key_monitor
-                                    .as_ref()
-                                    .and_then(KeyMonitor::capture_target);
-                                view.start(Input::Dictation, target, window, cx);
+                                view.start(Input::Dictation, window, cx);
                             }
                         });
                     })
@@ -720,11 +704,7 @@ impl MozuApp {
                 } else if !press.interrupted && press.started.elapsed() < HOLD_THRESHOLD {
                     match self.run.as_ref().map(|run| &run.input) {
                         None => {
-                            let target = self
-                                .key_monitor
-                                .as_ref()
-                                .and_then(KeyMonitor::capture_target);
-                            self.start(Input::Dictation, target, window, cx);
+                            self.start(Input::Dictation, window, cx);
                         }
                         Some(Input::Dictation) => self.request_finish(cx),
                         _ => {}
@@ -1254,7 +1234,7 @@ impl Render for MozuApp {
                 .disabled(unavailable)
                 .variant(ButtonVariant::Outline)
                 .on_click(cx.listener(|view, _, window, cx| {
-                    view.start(Input::Recording(view.recording_source), None, window, cx)
+                    view.start(Input::Recording(view.recording_source), window, cx)
                 }))
         });
         let stop = match screen.phase {
@@ -1649,7 +1629,7 @@ fn main() {
                             })
                             .detach();
                             if let Some(path) = &sample {
-                                demo.start(Input::Sample(path.clone()), None, window, cx);
+                                demo.start(Input::Sample(path.clone()), window, cx);
                             } else {
                                 demo.warm_recognition();
                             }

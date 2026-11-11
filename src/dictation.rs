@@ -1,15 +1,15 @@
-use std::{cell::Cell, ffi::c_void, ptr::NonNull, rc::Rc};
+use std::{cell::Cell, ptr::NonNull, rc::Rc};
 
 use async_channel::Sender;
 use block2::RcBlock;
 use core_foundation::{
-    base::{CFType, CFTypeRef, TCFType},
+    base::TCFType,
     boolean::CFBoolean,
     dictionary::{CFDictionary, CFDictionaryRef},
     string::{CFString, CFStringRef},
 };
 use core_graphics::{
-    event::{CGEvent, CGEventFlags},
+    event::{CGEvent, CGEventFlags, CGEventTapLocation},
     event_source::{CGEventSource, CGEventSourceStateID},
 };
 use objc2::{
@@ -18,7 +18,7 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardItem,
-    NSPasteboardTypeString, NSPasteboardWriting, NSWorkspace,
+    NSPasteboardTypeString, NSPasteboardWriting,
 };
 use objc2_foundation::{NSArray, NSString, NSUserDefaults, ns_string};
 
@@ -27,14 +27,6 @@ unsafe extern "C" {
     fn AXIsProcessTrusted() -> u8;
     fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> u8;
     static kAXTrustedCheckOptionPrompt: CFStringRef;
-    fn AXUIElementCreateSystemWide() -> CFTypeRef;
-    fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
-    fn AXUIElementCopyAttributeValue(
-        element: CFTypeRef,
-        attribute: CFStringRef,
-        value: *mut CFTypeRef,
-    ) -> i32;
-    fn AXUIElementGetPid(element: CFTypeRef, pid: *mut i32) -> i32;
 }
 
 #[link(name = "Carbon", kind = "framework")]
@@ -75,27 +67,16 @@ pub enum Key {
 
 pub struct KeyMonitor {
     monitors: Vec<Retained<AnyObject>>,
-    interaction_epoch: Rc<Cell<u64>>,
 }
 
 impl KeyMonitor {
     pub fn install(sender: Sender<Key>) -> Option<Self> {
-        let mouse_down =
-            NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown;
-        let mask = NSEventMask::FlagsChanged | NSEventMask::KeyDown | mouse_down;
+        let mask = NSEventMask::FlagsChanged | NSEventMask::KeyDown;
         let pressed = Rc::new(Cell::new(false));
-        let interaction_epoch = Rc::new(Cell::new(0u64));
-        let event_epoch = interaction_epoch.clone();
         let handler = move |event: NonNull<NSEvent>| {
             // AppKit owns the event for the duration of this callback.
             let event = unsafe { event.as_ref() };
             let event_type = event.r#type();
-            if event_type != NSEventType::FlagsChanged {
-                event_epoch.set(event_epoch.get().wrapping_add(1));
-                if event_type != NSEventType::KeyDown {
-                    return;
-                }
-            }
             let key = if event_type == NSEventType::FlagsChanged && event.keyCode() == 63 {
                 let down = event
                     .modifierFlags()
@@ -129,37 +110,8 @@ impl KeyMonitor {
         };
         let monitor = Self {
             monitors: global.into_iter().chain(local).collect(),
-            interaction_epoch,
         };
         (monitor.monitors.len() == 2).then_some(monitor)
-    }
-
-    pub fn capture_target(&self) -> Option<PasteTarget> {
-        if !is_trusted() || unsafe { IsSecureEventInputEnabled() } != 0 {
-            return None;
-        }
-        let frontmost = NSWorkspace::sharedWorkspace().frontmostApplication()?;
-        let pid = frontmost.processIdentifier();
-        if pid <= 0 || pid as u32 == std::process::id() {
-            return None;
-        }
-        let focus = if let Some(element) = focused_element().filter(|element| {
-            let mut element_pid = 0;
-            let status = unsafe { AXUIElementGetPid(element.as_CFTypeRef(), &mut element_pid) };
-            status == 0 && element_pid == pid
-        }) {
-            PasteFocus::Element(element)
-        } else if frontmost.bundleIdentifier().as_deref() == Some(ns_string!("com.google.Chrome")) {
-            // Chrome can omit the focused web control from macOS accessibility.
-            PasteFocus::ChromeWindow {
-                window: focused_window(pid)?,
-                epoch: self.interaction_epoch.clone(),
-                captured_epoch: self.interaction_epoch.get(),
-            }
-        } else {
-            return None;
-        };
-        Some(PasteTarget { focus, pid })
     }
 }
 
@@ -171,95 +123,111 @@ impl Drop for KeyMonitor {
     }
 }
 
-enum PasteFocus {
-    Element(CFType),
-    ChromeWindow {
-        window: CFType,
-        epoch: Rc<Cell<u64>>,
-        captured_epoch: u64,
-    },
+trait PastePlatform {
+    type Snapshot;
+    type Shortcut;
+    type Restore;
+
+    fn check_access(&self) -> Result<(), &'static str>;
+    fn prepare_shortcut(&self) -> Result<Self::Shortcut, &'static str>;
+    fn snapshot(&self) -> Result<Self::Snapshot, &'static str>;
+    fn clipboard_unchanged(&self, snapshot: &Self::Snapshot) -> bool;
+    fn write_text(
+        &self,
+        text: &str,
+        snapshot: Self::Snapshot,
+    ) -> Result<Self::Restore, &'static str>;
+    fn post_shortcut(&self, shortcut: Self::Shortcut);
 }
 
-pub struct PasteTarget {
-    focus: PasteFocus,
-    pid: i32,
+/// Paste into the input selected when the shortcut is dispatched.
+pub fn paste_text(text: &str) -> Result<ClipboardRestore, &'static str> {
+    paste_with(&NativePaste, text)
 }
 
-impl PasteTarget {
-    fn still_focused(&self) -> bool {
-        match &self.focus {
-            PasteFocus::Element(element) => focused_element().as_ref() == Some(element),
-            PasteFocus::ChromeWindow {
-                window,
-                epoch,
-                captured_epoch,
-            } => {
-                epoch.get() == *captured_epoch
-                    && NSWorkspace::sharedWorkspace()
-                        .frontmostApplication()
-                        .is_some_and(|app| app.processIdentifier() == self.pid)
-                    && focused_window(self.pid).as_ref() == Some(window)
-            }
+fn paste_with<P: PastePlatform>(platform: &P, text: &str) -> Result<P::Restore, &'static str> {
+    platform.check_access()?;
+    let shortcut = platform.prepare_shortcut()?;
+    let snapshot = platform.snapshot()?;
+    platform.check_access()?;
+    if !platform.clipboard_unchanged(&snapshot) {
+        return Err("クリップボードが変わったため、貼り付けを見送りました");
+    }
+    let restore = platform.write_text(text, snapshot)?;
+    platform.post_shortcut(shortcut);
+    Ok(restore)
+}
+
+struct NativePaste;
+
+struct ClipboardSnapshot {
+    change_count: isize,
+    items: Vec<ClipboardItem>,
+}
+
+impl PastePlatform for NativePaste {
+    type Snapshot = ClipboardSnapshot;
+    type Shortcut = [CGEvent; 2];
+    type Restore = ClipboardRestore;
+
+    fn check_access(&self) -> Result<(), &'static str> {
+        if !is_trusted() {
+            return Err("設定でアクセシビリティへのアクセスを許可してください");
         }
+        if unsafe { IsSecureEventInputEnabled() } != 0 {
+            return Err("セキュア入力が有効なため、貼り付けできませんでした");
+        }
+        Ok(())
     }
 
-    pub fn paste(&self, text: &str) -> Result<ClipboardRestore, &'static str> {
-        if !is_trusted() || unsafe { IsSecureEventInputEnabled() } != 0 {
-            return Err("元の入力欄に貼り付けできませんでした");
-        }
-        if !self.still_focused() {
-            return Err("入力先が変わったため、貼り付けを見送りました");
-        }
+    fn prepare_shortcut(&self) -> Result<Self::Shortcut, &'static str> {
         let source = CGEventSource::new(CGEventSourceStateID::Private)
             .map_err(|_| "貼り付けキーを作成できませんでした")?;
         let down = CGEvent::new_keyboard_event(source.clone(), 9, true)
             .map_err(|_| "貼り付けキーを作成できませんでした")?;
         let up = CGEvent::new_keyboard_event(source, 9, false)
             .map_err(|_| "貼り付けキーを作成できませんでした")?;
-        let board = NSPasteboard::generalPasteboard();
-        let before = board.changeCount();
-        let items = snapshot(&board)?;
-        if board.changeCount() != before || !self.still_focused() {
-            return Err("入力先またはクリップボードが変わりました");
-        }
-        board.clearContents();
-        if !board.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString }) {
-            restore(&board, &items);
-            return Err("クリップボードに書き込めませんでした");
-        }
-        let change_count = board.changeCount();
-        for event in [down, up] {
+        for event in [&down, &up] {
             event.set_flags(CGEventFlags::CGEventFlagCommand);
-            event.post_to_pid(self.pid);
         }
-        Ok(ClipboardRestore {
+        Ok([down, up])
+    }
+
+    fn snapshot(&self) -> Result<Self::Snapshot, &'static str> {
+        let board = NSPasteboard::generalPasteboard();
+        let change_count = board.changeCount();
+        Ok(ClipboardSnapshot {
             change_count,
-            items,
+            items: snapshot(&board)?,
         })
     }
-}
 
-fn focused_element() -> Option<CFType> {
-    let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
-    ax_attribute(&system, "AXFocusedUIElement")
-}
+    fn clipboard_unchanged(&self, snapshot: &Self::Snapshot) -> bool {
+        NSPasteboard::generalPasteboard().changeCount() == snapshot.change_count
+    }
 
-fn focused_window(pid: i32) -> Option<CFType> {
-    let application = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) };
-    ax_attribute(&application, "AXFocusedWindow")
-}
+    fn write_text(
+        &self,
+        text: &str,
+        snapshot: Self::Snapshot,
+    ) -> Result<Self::Restore, &'static str> {
+        let board = NSPasteboard::generalPasteboard();
+        board.clearContents();
+        if !board.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString }) {
+            restore(&board, &snapshot.items);
+            return Err("クリップボードに書き込めませんでした");
+        }
+        Ok(ClipboardRestore {
+            change_count: board.changeCount(),
+            items: snapshot.items,
+        })
+    }
 
-fn ax_attribute(element: &CFType, name: &str) -> Option<CFType> {
-    let attribute = CFString::new(name);
-    let mut value: *const c_void = std::ptr::null();
-    let result = unsafe {
-        AXUIElementCopyAttributeValue(
-            element.as_CFTypeRef(),
-            attribute.as_concrete_TypeRef(),
-            &mut value,
-        )
-    };
-    (result == 0 && !value.is_null()).then(|| unsafe { CFType::wrap_under_create_rule(value) })
+    fn post_shortcut(&self, shortcut: Self::Shortcut) {
+        for event in shortcut {
+            event.post(CGEventTapLocation::HID);
+        }
+    }
 }
 
 type ClipboardItem = Retained<ProtocolObject<dyn NSPasteboardWriting>>;
@@ -303,5 +271,114 @@ impl ClipboardRestore {
         if board.changeCount() == self.change_count {
             restore(&board, &self.items);
         }
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Desktop {
+        window: Cell<u32>,
+        clipboard: RefCell<String>,
+        sent: RefCell<Vec<(u32, String)>>,
+        permission: Result<(), &'static str>,
+        change_count: Cell<isize>,
+        switch_during_snapshot: Option<u32>,
+        external_clipboard: Option<String>,
+    }
+
+    impl Desktop {
+        fn new(
+            permission: Result<(), &'static str>,
+            switch_during_snapshot: Option<u32>,
+            external_clipboard: Option<String>,
+        ) -> Self {
+            Self {
+                window: Cell::new(1),
+                clipboard: RefCell::new("previous clipboard".into()),
+                sent: RefCell::new(Vec::new()),
+                permission,
+                change_count: Cell::new(1),
+                switch_during_snapshot,
+                external_clipboard,
+            }
+        }
+    }
+
+    impl PastePlatform for Desktop {
+        type Snapshot = (isize, String);
+        type Shortcut = ();
+        type Restore = String;
+
+        fn check_access(&self) -> Result<(), &'static str> {
+            self.permission
+        }
+        fn prepare_shortcut(&self) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn snapshot(&self) -> Result<Self::Snapshot, &'static str> {
+            let snapshot = (self.change_count.get(), self.clipboard.borrow().clone());
+            if let Some(window) = self.switch_during_snapshot {
+                self.window.set(window);
+            }
+            if let Some(text) = &self.external_clipboard {
+                *self.clipboard.borrow_mut() = text.clone();
+                self.change_count.set(self.change_count.get() + 1);
+            }
+            Ok(snapshot)
+        }
+        fn clipboard_unchanged(&self, snapshot: &Self::Snapshot) -> bool {
+            self.change_count.get() == snapshot.0
+        }
+        fn write_text(&self, text: &str, snapshot: Self::Snapshot) -> Result<String, &'static str> {
+            *self.clipboard.borrow_mut() = text.into();
+            self.change_count.set(self.change_count.get() + 1);
+            Ok(snapshot.1)
+        }
+        fn post_shortcut(&self, _: ()) {
+            self.sent
+                .borrow_mut()
+                .push((self.window.get(), self.clipboard.borrow().clone()));
+        }
+    }
+
+    #[test]
+    fn completion_pastes_into_the_current_window_after_recording_elsewhere() {
+        let desktop = Desktop::new(Ok(()), None, None);
+        assert_eq!(desktop.window.get(), 1);
+        desktop.window.set(2);
+        let previous = paste_with(&desktop, "test transcript").unwrap();
+        assert_eq!(*desktop.sent.borrow(), vec![(2, "test transcript".into())]);
+        assert_eq!(previous, "previous clipboard");
+    }
+
+    #[test]
+    fn window_switch_during_preparation_uses_the_window_at_dispatch() {
+        let desktop = Desktop::new(Ok(()), Some(2), None);
+        paste_with(&desktop, "test transcript").unwrap();
+        assert_eq!(*desktop.sent.borrow(), vec![(2, "test transcript".into())]);
+    }
+
+    #[test]
+    fn denied_access_preserves_clipboard_and_sends_no_keys() {
+        for error in ["permission revoked", "secure input"] {
+            let desktop = Desktop::new(Err(error), None, None);
+            assert_eq!(paste_with(&desktop, "test transcript"), Err(error));
+            assert!(desktop.sent.borrow().is_empty());
+            assert_eq!(*desktop.clipboard.borrow(), "previous clipboard");
+        }
+    }
+
+    #[test]
+    fn concurrent_clipboard_update_is_neither_overwritten_nor_pasted() {
+        let desktop = Desktop::new(Ok(()), None, Some("new clipboard".into()));
+        assert_eq!(
+            paste_with(&desktop, "test transcript"),
+            Err("クリップボードが変わったため、貼り付けを見送りました")
+        );
+        assert!(desktop.sent.borrow().is_empty());
+        assert_eq!(*desktop.clipboard.borrow(), "new clipboard");
     }
 }
