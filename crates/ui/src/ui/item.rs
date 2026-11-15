@@ -1,485 +1,449 @@
-//! Shadcn-compatible composition for dense content and settings rows.
-
+use crate::theme::Theme;
+use crate::ui::separator::Separator;
+use crate::ui::utils::presentation::{ComponentTheme, ControlSize, TextRole};
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ParentElement, RenderOnce,
-    Role, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, Link, ParentElement, Refineable,
+    RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, div, px,
 };
-
-use crate::theme::{
-    border::BORDER_DEFAULT,
-    colors::G2VTheme,
-    radius::{RADIUS_LG, RADIUS_SM},
-    rems_from_pixels,
-    sizing::{SIZE_6, SIZE_8, SIZE_10},
-    spacing::{SPACE_2, SPACE_2_5, SPACE_3, SPACE_4},
-    typography,
-};
-
-use super::{Separator, TextStyleExt as _};
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemVariant {
-    #[default]
     Default,
     Outline,
     Muted,
 }
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemSize {
-    #[default]
     Default,
-    Small,
-    ExtraSmall,
+    Sm,
+    Xs,
 }
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemMediaVariant {
-    #[default]
     Default,
     Icon,
     Image,
 }
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ItemGroupVariant {
-    #[default]
-    Default,
-    Muted,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemContentKind {
+    TitleOnly,
+    WithDescription,
 }
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ItemSpacing {
-    gap: gpui::Rems,
-    padding_x: gpui::Rems,
-    padding_y: gpui::Rems,
+pub(crate) struct Presentation {
+    pub root: StyleRefinement,
+    pub hover: StyleRefinement,
+    pub focus: StyleRefinement,
+    pub media: StyleRefinement,
+    pub media_icon_size: f32,
+    pub content: StyleRefinement,
+    pub title: StyleRefinement,
+    pub description: StyleRefinement,
+    pub actions: StyleRefinement,
+    pub header: StyleRefinement,
+    pub footer: StyleRefinement,
+    pub group_gap: f32,
 }
-
-fn item_spacing(size: ItemSize) -> ItemSpacing {
-    match size {
-        ItemSize::Default | ItemSize::Small => ItemSpacing {
-            gap: rems_from_pixels(SPACE_2_5),
-            padding_x: rems_from_pixels(SPACE_3),
-            padding_y: rems_from_pixels(SPACE_2_5),
-        },
-        ItemSize::ExtraSmall => ItemSpacing {
-            gap: rems_from_pixels(SPACE_2),
-            padding_x: rems_from_pixels(SPACE_2_5),
-            padding_y: rems_from_pixels(SPACE_2),
-        },
-    }
-}
-
-fn group_gap(size: ItemSize) -> gpui::Rems {
-    match size {
-        ItemSize::Default => rems_from_pixels(SPACE_4),
-        ItemSize::Small => rems_from_pixels(SPACE_2_5),
-        ItemSize::ExtraSmall => rems_from_pixels(SPACE_2),
-    }
-}
-
-fn image_size(size: ItemSize) -> gpui::Rems {
-    match size {
-        ItemSize::Default => SIZE_10,
-        ItemSize::Small => SIZE_8,
-        ItemSize::ExtraSmall => SIZE_6,
-    }
-}
-
-macro_rules! item_container {
-    ($name:ident) => {
-        #[derive(Default, IntoElement)]
-        #[must_use]
-        pub struct $name {
-            children: Vec<AnyElement>,
-        }
-
-        impl $name {
-            pub fn new() -> Self {
-                Self::default()
-            }
-        }
-
-        impl ParentElement for $name {
-            fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-                self.children.extend(elements);
-            }
-        }
-    };
-}
-
-item_container!(ItemTitle);
-
-#[derive(IntoElement)]
-#[must_use]
-pub struct ItemGroup {
-    id: ElementId,
+pub(crate) fn presentation(
+    variant: ItemVariant,
     size: ItemSize,
-    variant: ItemGroupVariant,
-    children: Vec<AnyElement>,
+    media_variant: ItemMediaVariant,
+    content_kind: ItemContentKind,
+    window: &Window,
+    cx: &App,
+) -> Presentation {
+    let theme = Theme::current(window, cx);
+    let tokens = ComponentTheme::current(cx);
+    let compact = tokens.size == ControlSize::Compact;
+    let title = match size {
+        ItemSize::Xs => TextRole::Body,
+        ItemSize::Default | ItemSize::Sm => TextRole::Subtitle,
+    }
+    .metrics(tokens.size, &tokens);
+    let description = match size {
+        ItemSize::Xs => TextRole::Caption,
+        ItemSize::Default | ItemSize::Sm => TextRole::Body,
+    }
+    .metrics(tokens.size, &tokens);
+    let (inset, gap) = match (size, compact) {
+        (ItemSize::Default, false) => (16., 12.),
+        (ItemSize::Default, true) => (12., 10.),
+        (ItemSize::Sm, false) => (12., 10.),
+        (ItemSize::Sm, true) => (10., 8.),
+        (ItemSize::Xs, false) => (8., 8.),
+        (ItemSize::Xs, true) => (6., 6.),
+    };
+    let radius = tokens.shape.radii(&tokens).container;
+    let root = StyleRefinement::default()
+        .flex()
+        .w_full()
+        .min_w(px(0.))
+        .flex_wrap()
+        .items_center()
+        .gap(px(gap))
+        .p(px(inset))
+        .rounded(px(radius))
+        .border_1()
+        .border_color(match variant {
+            ItemVariant::Outline => theme.border.into(),
+            _ => gpui::transparent_black(),
+        })
+        .bg(match variant {
+            ItemVariant::Muted => theme.hover(),
+            _ => gpui::transparent_black(),
+        })
+        .font_family(tokens.typography.family.clone())
+        .font_weight(tokens.typography.normal.weight)
+        .font_variations(tokens.typography.normal.variations())
+        .text_size(px(description.size))
+        .line_height(px(description.line_height))
+        .text_color(theme.foreground);
+    let hover = StyleRefinement::default().bg(theme.hover());
+    let focus =
+        StyleRefinement::default().border_color(gpui::Hsla::from(theme.foreground).opacity(0.4));
+    let icon_size = if compact { 16. } else { 20. };
+    let mut media = StyleRefinement::default()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center();
+    match media_variant {
+        ItemMediaVariant::Default => {
+            if content_kind == ItemContentKind::WithDescription {
+                media = media.self_start().h(px(title.line_height));
+            }
+        }
+        ItemMediaVariant::Icon => {
+            media = media
+                .size(px(if compact { 28. } else { 32. }))
+                .rounded(px(tokens.shape.radii(&tokens).item))
+                .bg(theme.hover());
+        }
+        ItemMediaVariant::Image => {
+            let image_size = match size {
+                ItemSize::Default => 40.,
+                ItemSize::Sm => 32.,
+                ItemSize::Xs => 24.,
+            };
+            media = media
+                .size(px(image_size - if compact { 4. } else { 0. }))
+                .overflow_hidden()
+                .rounded(px(tokens.shape.radii(&tokens).item));
+        }
+    }
+    let header = StyleRefinement::default()
+        .flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap(px(gap));
+    let mut header = header;
+    header.flex_basis = Some(gpui::relative(1.).into());
+    Presentation {
+        root,
+        hover,
+        focus,
+        media,
+        media_icon_size: icon_size,
+        content: StyleRefinement::default()
+            .flex()
+            .flex_1()
+            .min_w(px(0.))
+            .flex_col()
+            .gap(px(4.)),
+        title: StyleRefinement::default()
+            .text_size(px(title.size))
+            .line_height(px(title.line_height))
+            .font_weight(tokens.typography.semibold.weight)
+            .font_variations(tokens.typography.semibold.variations()),
+        description: StyleRefinement::default()
+            .line_clamp(2)
+            .text_left()
+            .text_color(theme.muted_foreground)
+            .font_weight(tokens.typography.normal.weight)
+            .font_variations(tokens.typography.normal.variations())
+            .text_size(px(description.size))
+            .line_height(px(description.line_height)),
+        actions: StyleRefinement::default()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(8.)),
+        footer: header.clone(),
+        header,
+        group_gap: gap,
+    }
 }
 
-impl ItemGroup {
-    pub fn new(id: impl Into<ElementId>, size: ItemSize) -> Self {
+/// Editable content and actions, with native link behavior when a URL is supplied.
+#[derive(IntoElement)]
+pub struct Item {
+    id: ElementId,
+    title: SharedString,
+    variant: ItemVariant,
+    size: ItemSize,
+    media: Option<(ItemMediaVariant, Box<dyn FnOnce(f32) -> AnyElement>)>,
+    description: Option<AnyElement>,
+    actions: Option<AnyElement>,
+    header: Option<AnyElement>,
+    footer: Option<AnyElement>,
+    content: Option<AnyElement>,
+    url: Option<SharedString>,
+    style: StyleRefinement,
+    content_style: StyleRefinement,
+}
+impl Item {
+    pub fn new(id: impl Into<ElementId>, title: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
-            size,
-            variant: ItemGroupVariant::Default,
-            children: Vec::new(),
+            title: title.into(),
+            variant: ItemVariant::Default,
+            size: ItemSize::Default,
+            media: None,
+            description: None,
+            actions: None,
+            header: None,
+            footer: None,
+            content: None,
+            url: None,
+            style: StyleRefinement::default(),
+            content_style: StyleRefinement::default(),
         }
     }
-
-    pub fn variant(mut self, variant: ItemGroupVariant) -> Self {
+    pub fn variant(mut self, variant: ItemVariant) -> Self {
         self.variant = variant;
         self
     }
-}
-
-impl ParentElement for ItemGroup {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
+    pub fn size(mut self, size: ItemSize) -> Self {
+        self.size = size;
+        self
+    }
+    pub fn description(mut self, description: impl IntoElement) -> Self {
+        self.description = Some(description.into_any_element());
+        self
+    }
+    pub fn actions(mut self, actions: impl IntoElement) -> Self {
+        self.actions = Some(actions.into_any_element());
+        self
+    }
+    pub fn header(mut self, header: impl IntoElement) -> Self {
+        self.header = Some(header.into_any_element());
+        self
+    }
+    pub fn footer(mut self, footer: impl IntoElement) -> Self {
+        self.footer = Some(footer.into_any_element());
+        self
+    }
+    pub fn content(mut self, content: impl IntoElement) -> Self {
+        self.content = Some(content.into_any_element());
+        self
+    }
+    pub fn content_style(mut self, style: StyleRefinement) -> Self {
+        self.content_style = style;
+        self
+    }
+    pub fn link(mut self, url: impl Into<SharedString>) -> Self {
+        self.url = Some(url.into());
+        self
+    }
+    /// Uses the native image element's cover fit inside the preset image frame.
+    pub fn image(self, source: impl Into<gpui::ImageSource>) -> Self {
+        use gpui::StyledImage;
+        self.media(
+            ItemMediaVariant::Image,
+            gpui::img(source).object_fit(gpui::ObjectFit::Cover),
+        )
+    }
+    pub fn media<E: IntoElement + Styled + 'static>(
+        mut self,
+        variant: ItemMediaVariant,
+        mut child: E,
+    ) -> Self {
+        self.media = Some((
+            variant,
+            Box::new(move |icon_size| {
+                let caller = child.style().clone();
+                match variant {
+                    ItemMediaVariant::Default => {}
+                    ItemMediaVariant::Icon => child
+                        .style()
+                        .refine(&StyleRefinement::default().size(px(icon_size))),
+                    ItemMediaVariant::Image => child
+                        .style()
+                        .refine(&StyleRefinement::default().size_full()),
+                }
+                child.style().refine(&caller);
+                child.into_any_element()
+            }),
+        ));
+        self
     }
 }
-
-impl RenderOnce for ItemGroup {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let grouped = self.variant == ItemGroupVariant::Muted;
-        div()
-            .id(self.id)
-            .role(Role::List)
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(if grouped {
-                gpui::Rems::ZERO
+impl Styled for Item {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+fn part(style: &StyleRefinement) -> gpui::Div {
+    let mut element = div();
+    element.style().refine(style);
+    element
+}
+impl RenderOnce for Item {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let media_kind = self
+            .media
+            .as_ref()
+            .map_or(ItemMediaVariant::Default, |media| media.0);
+        let p = presentation(
+            self.variant,
+            self.size,
+            media_kind,
+            if self.description.is_some() {
+                ItemContentKind::WithDescription
             } else {
-                group_gap(self.size)
+                ItemContentKind::TitleOnly
+            },
+            window,
+            cx,
+        );
+        let mut contents = Vec::new();
+        if let Some(header) = self.header {
+            contents.push(part(&p.header).child(header).into_any_element());
+        }
+        if let Some((_, render)) = self.media {
+            contents.push(
+                part(&p.media)
+                    .child(render(p.media_icon_size))
+                    .into_any_element(),
+            );
+        }
+        let mut body = part(&p.content);
+        body.style().refine(&self.content_style);
+        if let Some(custom) = self.content {
+            body = body.child(custom);
+        } else {
+            body = body.child(part(&p.title).child(self.title.clone()));
+            if let Some(description) = self.description {
+                body = body.child(part(&p.description).child(description));
+            }
+        }
+        contents.push(body.into_any_element());
+        if let Some(actions) = self.actions {
+            contents.push(part(&p.actions).child(actions).into_any_element());
+        }
+        if let Some(footer) = self.footer {
+            contents.push(part(&p.footer).child(footer).into_any_element());
+        }
+        let mut style = p.root;
+        style.refine(&self.style);
+        if let Some(url) = self.url {
+            let mut link = Link::new(self.id, url)
+                .aria_label(self.title)
+                .children(contents);
+            link.style().refine(&style);
+            let hover = p.hover;
+            let focus = p.focus;
+            link.hover(move |mut style| {
+                style.refine(&hover);
+                style
             })
-            .when(grouped, |group| {
-                group
-                    .overflow_hidden()
-                    .rounded(rems_from_pixels(RADIUS_LG))
-                    .bg(G2VTheme::global(cx).muted.opacity(0.5))
+            .focus_visible(move |mut style| {
+                style.refine(&focus);
+                style
             })
-            .children(self.children)
+            .transition(gpui::StyleTransition::colors(
+                ComponentTheme::current(cx)
+                    .motion
+                    .animations
+                    .item
+                    .animation(),
+            ))
+            .into_any_element()
+        } else {
+            let mut root = div().id(self.id).children(contents);
+            root.style().refine(&style);
+            root.into_any_element()
+        }
     }
 }
 
-#[derive(IntoElement)]
-#[must_use]
-pub struct Item {
-    id: ElementId,
-    variant: ItemVariant,
-    size: ItemSize,
-    children: Vec<AnyElement>,
+enum GroupEntry {
+    Item(Item),
+    Separator(ElementId),
 }
-
-impl Item {
-    pub fn new(id: impl Into<ElementId>, variant: ItemVariant, size: ItemSize) -> Self {
+/// A semantic list with size-aware spacing derived from explicitly added items.
+#[derive(IntoElement)]
+pub struct ItemGroup {
+    id: ElementId,
+    entries: Vec<GroupEntry>,
+    style: StyleRefinement,
+}
+impl ItemGroup {
+    pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
-            variant,
-            size,
-            children: Vec::new(),
+            entries: Vec::new(),
+            style: StyleRefinement::default(),
         }
     }
-}
-
-impl ParentElement for Item {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
+    pub fn item(mut self, item: Item) -> Self {
+        self.entries.push(GroupEntry::Item(item));
+        self
+    }
+    pub fn separator(mut self, id: impl Into<ElementId>) -> Self {
+        self.entries.push(GroupEntry::Separator(id.into()));
+        self
     }
 }
-
-impl RenderOnce for Item {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = G2VTheme::global(cx);
-        let spacing = item_spacing(self.size);
-        let border_color = match self.variant {
-            ItemVariant::Outline => theme.border,
-            ItemVariant::Default | ItemVariant::Muted => theme.border.opacity(0.0),
+impl Styled for ItemGroup {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+impl RenderOnce for ItemGroup {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let size = if self
+            .entries
+            .iter()
+            .any(|entry| matches!(entry,GroupEntry::Item(item) if item.size==ItemSize::Xs))
+        {
+            ItemSize::Xs
+        } else if self
+            .entries
+            .iter()
+            .any(|entry| matches!(entry,GroupEntry::Item(item) if item.size==ItemSize::Sm))
+        {
+            ItemSize::Sm
+        } else {
+            ItemSize::Default
         };
-
-        div()
+        let p = presentation(
+            ItemVariant::Default,
+            size,
+            ItemMediaVariant::Default,
+            ItemContentKind::TitleOnly,
+            window,
+            cx,
+        );
+        let mut group = div()
             .id(self.id)
-            .role(Role::ListItem)
+            .role(gpui::Role::List)
+            .flex()
             .w_full()
-            .min_w_0()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(spacing.gap)
-            .rounded(rems_from_pixels(RADIUS_LG))
-            .border(BORDER_DEFAULT)
-            .border_color(border_color)
-            .when(self.variant == ItemVariant::Muted, |item| {
-                item.bg(theme.muted.opacity(0.5))
-            })
-            .px(spacing.padding_x)
-            .py(spacing.padding_y)
-            .text_style(typography::tokens().sm)
-            .text_color(theme.foreground)
-            .children(self.children)
-    }
-}
-
-#[derive(IntoElement)]
-#[must_use]
-pub struct ItemMedia {
-    variant: ItemMediaVariant,
-    size: ItemSize,
-    child: AnyElement,
-}
-
-impl ItemMedia {
-    pub fn new(variant: ItemMediaVariant, size: ItemSize, child: impl IntoElement) -> Self {
-        Self {
-            variant,
-            size,
-            child: child.into_any_element(),
-        }
-    }
-}
-
-impl RenderOnce for ItemMedia {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(rems_from_pixels(SPACE_2))
-            .when(self.variant == ItemMediaVariant::Image, |media| {
-                media
-                    .size(image_size(self.size))
-                    .overflow_hidden()
-                    .rounded(rems_from_pixels(RADIUS_SM))
-            })
-            .child(self.child)
-    }
-}
-
-#[derive(IntoElement)]
-#[must_use]
-pub struct ItemContent {
-    size: ItemSize,
-    children: Vec<AnyElement>,
-}
-
-impl ItemContent {
-    pub fn new(size: ItemSize) -> Self {
-        Self {
-            size,
-            children: Vec::new(),
-        }
-    }
-}
-
-impl ParentElement for ItemContent {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
-    }
-}
-
-impl RenderOnce for ItemContent {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div()
-            .min_w_0()
-            .flex_1()
-            .flex()
             .flex_col()
-            .items_start()
-            .when(self.size != ItemSize::ExtraSmall, |content| {
-                content.gap(rems_from_pixels(crate::theme::spacing::SPACE_1))
-            })
-            .children(self.children)
-    }
-}
-
-impl RenderOnce for ItemTitle {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div()
-            .min_w_0()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(rems_from_pixels(SPACE_2))
-            .truncate()
-            .text_style(typography::tokens().sm)
-            .font_weight(typography::FONT_WEIGHT.medium)
-            .children(self.children)
-    }
-}
-
-#[derive(IntoElement)]
-#[must_use]
-pub struct ItemDescription {
-    children: Vec<AnyElement>,
-}
-
-impl ItemDescription {
-    pub fn new(_size: ItemSize) -> Self {
-        Self {
-            children: Vec::new(),
+            .gap(px(p.group_gap));
+        group.style().refine(&self.style);
+        for (index, entry) in self.entries.into_iter().enumerate() {
+            group = match entry {
+                GroupEntry::Item(item) => group.child(
+                    div()
+                        .id(("item", index))
+                        .role(gpui::Role::ListItem)
+                        .w_full()
+                        .child(item),
+                ),
+                GroupEntry::Separator(id) => group.child(Separator::new(id).my(px(8.))),
+            };
         }
-    }
-}
-
-impl ParentElement for ItemDescription {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
-    }
-}
-
-impl RenderOnce for ItemDescription {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let text_style = typography::tokens().xs;
-        div()
-            .min_w_0()
-            .max_h(text_style.line_height * 2.0)
-            .overflow_hidden()
-            .whitespace_normal()
-            .text_left()
-            .text_style(text_style)
-            .text_color(G2VTheme::global(cx).muted_foreground)
-            .children(self.children)
-    }
-}
-
-#[derive(Default, IntoElement)]
-#[must_use]
-pub struct ItemActions {
-    full_width: bool,
-    children: Vec<AnyElement>,
-}
-
-impl ItemActions {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn full_width(mut self) -> Self {
-        self.full_width = true;
-        self
-    }
-}
-
-impl ParentElement for ItemActions {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
-    }
-}
-
-impl RenderOnce for ItemActions {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div()
-            .when(self.full_width, gpui::Styled::w_full)
-            .when(!self.full_width, gpui::Styled::flex_none)
-            .flex()
-            .items_center()
-            .gap(rems_from_pixels(SPACE_2))
-            .children(self.children)
-    }
-}
-
-#[derive(IntoElement, Default)]
-#[must_use]
-pub struct ItemSeparator {
-    inset: Option<ItemSize>,
-}
-
-impl ItemSeparator {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn inset(mut self, size: ItemSize) -> Self {
-        self.inset = Some(size);
-        self
-    }
-}
-
-impl RenderOnce for ItemSeparator {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div()
-            .when_some(self.inset, |separator, size| {
-                separator.mx(item_spacing(size).padding_x)
-            })
-            .child(Separator::horizontal())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use gpui::px;
-
-    use super::*;
-
-    #[test]
-    fn nova_item_spacing_matches_each_supported_size() {
-        assert_eq!(
-            item_spacing(ItemSize::Default),
-            ItemSpacing {
-                gap: gpui::rems(0.625),
-                padding_x: gpui::rems(0.75),
-                padding_y: gpui::rems(0.625),
-            }
-        );
-        assert_eq!(
-            item_spacing(ItemSize::Small),
-            item_spacing(ItemSize::Default)
-        );
-        assert_eq!(
-            item_spacing(ItemSize::ExtraSmall),
-            ItemSpacing {
-                gap: gpui::rems(0.5),
-                padding_x: gpui::rems(0.625),
-                padding_y: gpui::rems(0.5),
-            }
-        );
-    }
-
-    #[test]
-    fn group_density_tracks_item_size() {
-        assert_eq!(group_gap(ItemSize::Default), gpui::rems(1.0));
-        assert_eq!(group_gap(ItemSize::Small), gpui::rems(0.625));
-        assert_eq!(group_gap(ItemSize::ExtraSmall), gpui::rems(0.5));
-    }
-
-    #[test]
-    fn item_spacing_scales_with_the_window_rem_size() {
-        let default = item_spacing(ItemSize::Default);
-        assert_eq!(default.gap.to_pixels(px(16.0)), px(10.0));
-        assert_eq!(default.padding_x.to_pixels(px(16.0)), px(12.0));
-        assert_eq!(default.padding_y.to_pixels(px(16.0)), px(10.0));
-        assert_eq!(default.gap.to_pixels(px(18.0)), px(11.25));
-        assert_eq!(default.padding_x.to_pixels(px(18.0)), px(13.5));
-        assert_eq!(default.padding_y.to_pixels(px(18.0)), px(11.25));
-    }
-
-    #[test]
-    fn contained_group_and_inset_separator_are_explicit() {
-        let group = ItemGroup::new("settings", ItemSize::Default).variant(ItemGroupVariant::Muted);
-        let separator = ItemSeparator::new().inset(ItemSize::Default);
-
-        assert_eq!(group.variant, ItemGroupVariant::Muted);
-        assert_eq!(separator.inset, Some(ItemSize::Default));
-    }
-
-    #[test]
-    fn actions_expand_only_when_requested() {
-        assert!(!ItemActions::new().full_width);
-        assert!(ItemActions::new().full_width().full_width);
-    }
-
-    #[test]
-    fn image_media_size_tracks_item_size_and_rem_scale() {
-        assert_eq!(image_size(ItemSize::Default).to_pixels(px(16.0)), px(40.0));
-        assert_eq!(image_size(ItemSize::Small).to_pixels(px(16.0)), px(32.0));
-        assert_eq!(
-            image_size(ItemSize::ExtraSmall).to_pixels(px(16.0)),
-            px(24.0)
-        );
-        assert_eq!(image_size(ItemSize::Default).to_pixels(px(18.0)), px(45.0));
+        group
     }
 }

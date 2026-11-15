@@ -1,151 +1,210 @@
-//! Shared empty-state composition matching G2V's React UI.
-
+use crate::theme::Theme;
+use crate::ui::utils::presentation::{ComponentTheme, ControlSize, TextRole};
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _,
-    Window, div, prelude::FluentBuilder as _, rems,
+    AnyElement, App, Div, IntoElement, ParentElement, Refineable, RenderOnce, StyleRefinement,
+    Styled, Window, div, px,
 };
 
-use crate::theme::{
-    colors::G2VTheme,
-    radius::{RADIUS_LG, RADIUS_XL},
-    sizing::SIZE_8,
-    typography,
-};
-
-use super::TextStyleExt as _;
-
-const EMPTY_MAX_WIDTH: gpui::Rems = rems(24.0);
-const EMPTY_ICON_SIZE: gpui::Rems = SIZE_8;
-const RELAXED_LINE_HEIGHT: gpui::Rems = rems(1.421_875);
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EmptyMediaVariant {
-    #[default]
     Default,
     Icon,
 }
 
-#[derive(IntoElement)]
-#[must_use]
-pub struct Empty {
-    title: SharedString,
-    description: Option<SharedString>,
-    media: Option<(EmptyMediaVariant, AnyElement)>,
-    content: Option<AnyElement>,
+struct Presentation {
+    root: StyleRefinement,
+    header: StyleRefinement,
+    media: StyleRefinement,
+    icon_media: StyleRefinement,
+    icon_size: f32,
+    title: StyleRefinement,
+    description: StyleRefinement,
+    content: StyleRefinement,
+}
+fn presentation(window: &Window, cx: &App) -> Presentation {
+    let theme = Theme::current(window, cx);
+    let tokens = ComponentTheme::current(cx);
+    let compact = tokens.size == ControlSize::Compact;
+    let title = TextRole::Subtitle.metrics(tokens.size, &tokens);
+    let body = TextRole::Body.metrics(tokens.size, &tokens);
+    Presentation {
+        root: StyleRefinement::default()
+            .flex()
+            .w_full()
+            .min_w(px(0.))
+            .flex_1()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .text_center()
+            .font_family(tokens.typography.family.clone())
+            .font_variations(tokens.typography.normal.variations())
+            .text_color(theme.foreground)
+            .gap(px(if compact { 12. } else { 16. }))
+            .p(px(if compact { 24. } else { 32. }))
+            .rounded(px(tokens.shape.radii(&tokens).container)),
+        header: StyleRefinement::default()
+            .flex()
+            .w_full()
+            .max_w(px(384.))
+            .min_w(px(0.))
+            .flex_col()
+            .items_center()
+            .gap(px(if compact { 2. } else { 4. })),
+        media: StyleRefinement::default()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .mb(px(if compact { 6. } else { 8. })),
+        icon_media: StyleRefinement::default()
+            .size(px(if compact { 32. } else { 40. }))
+            .rounded(px(tokens.shape.radii(&tokens).item))
+            .bg(theme.hover())
+            .text_color(theme.muted_foreground),
+        icon_size: if compact { 16. } else { 20. },
+        title: StyleRefinement::default()
+            .max_w_full()
+            .min_w(px(0.))
+            .text_size(px(title.size))
+            .line_height(px(title.line_height))
+            .font_variations(tokens.typography.semibold.variations()),
+        description: StyleRefinement::default()
+            .flex()
+            .flex_col()
+            .items_center()
+            .w_full()
+            .min_w(px(0.))
+            .text_size(px(body.size))
+            .line_height(px(body.line_height))
+            .text_color(theme.muted_foreground),
+        content: StyleRefinement::default()
+            .flex()
+            .w_full()
+            .max_w(px(384.))
+            .min_w(px(0.))
+            .flex_col()
+            .items_center()
+            .gap(px(if compact { 6. } else { 8. }))
+            .text_size(px(body.size))
+            .line_height(px(body.line_height)),
+    }
 }
 
+/// An editable empty-state layout. Actions and visibility belong to the application.
+#[derive(IntoElement)]
+pub struct Empty {
+    style: StyleRefinement,
+    header_style: StyleRefinement,
+    content_style: StyleRefinement,
+    media: Option<(EmptyMediaVariant, Box<dyn FnOnce(f32) -> AnyElement>)>,
+    title: Option<AnyElement>,
+    description: Option<AnyElement>,
+    content: Option<AnyElement>,
+    children: Vec<AnyElement>,
+}
 impl Empty {
-    pub fn new(title: impl Into<SharedString>) -> Self {
+    pub fn new() -> Self {
         Self {
-            title: title.into(),
-            description: None,
+            style: StyleRefinement::default(),
+            header_style: StyleRefinement::default(),
+            content_style: StyleRefinement::default(),
             media: None,
+            title: None,
+            description: None,
             content: None,
+            children: Vec::new(),
         }
     }
-
-    pub fn description(mut self, description: impl Into<SharedString>) -> Self {
-        self.description = Some(description.into());
+    pub fn media<E: IntoElement + Styled + 'static>(
+        mut self,
+        variant: EmptyMediaVariant,
+        mut element: E,
+    ) -> Self {
+        self.media = Some((
+            variant,
+            Box::new(move |size| {
+                if variant == EmptyMediaVariant::Icon {
+                    let caller = element.style().clone();
+                    element
+                        .style()
+                        .refine(&StyleRefinement::default().size(px(size)));
+                    element.style().refine(&caller);
+                }
+                element.into_any_element()
+            }),
+        ));
         self
     }
-
-    pub fn media(mut self, variant: EmptyMediaVariant, media: impl IntoElement) -> Self {
-        self.media = Some((variant, media.into_any_element()));
+    pub fn title(mut self, title: impl IntoElement) -> Self {
+        self.title = Some(title.into_any_element());
         self
     }
-
+    pub fn description(mut self, description: impl IntoElement) -> Self {
+        self.description = Some(description.into_any_element());
+        self
+    }
     pub fn content(mut self, content: impl IntoElement) -> Self {
         self.content = Some(content.into_any_element());
         self
     }
-}
-
-impl RenderOnce for Empty {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = G2VTheme::global(cx);
-        let header = div()
-            .w_full()
-            .max_w(EMPTY_MAX_WIDTH)
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap_2()
-            .when_some(self.media, |header, (variant, media)| {
-                header.child(
-                    div()
-                        .mb_2()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(variant == EmptyMediaVariant::Icon, |media_container| {
-                            media_container
-                                .size(EMPTY_ICON_SIZE)
-                                .rounded(RADIUS_LG)
-                                .bg(theme.muted)
-                                .text_color(theme.foreground)
-                        })
-                        .child(media),
-                )
-            })
-            .child(div().text_style(typography::tokens().sm).child(self.title))
-            .when_some(self.description, |header, description| {
-                header.child(
-                    div()
-                        .text_style(typography::tokens().sm)
-                        .line_height(RELAXED_LINE_HEIGHT)
-                        .text_color(theme.muted_foreground)
-                        .child(description),
-                )
-            });
-
-        div()
-            .w_full()
-            .min_w_0()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_4()
-            .rounded(RADIUS_XL)
-            .p_6()
-            .text_center()
-            .child(header)
-            .when_some(self.content, |empty, content| {
-                empty.child(
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .max_w(EMPTY_MAX_WIDTH)
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap_2p5()
-                        .text_style(typography::tokens().sm)
-                        .child(content),
-                )
-            })
+    pub fn header_style(mut self, style: StyleRefinement) -> Self {
+        self.header_style = style;
+        self
+    }
+    pub fn content_style(mut self, style: StyleRefinement) -> Self {
+        self.content_style = style;
+        self
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::theme::spacing::{SPACE_2_5, SPACE_4, SPACE_6};
-    use gpui::px;
-
-    #[test]
-    fn dimensions_follow_the_window_rem_size() {
-        assert_eq!(SPACE_4, px(16.0));
-        assert_eq!(SPACE_6, px(24.0));
-        assert_eq!(SPACE_2_5, px(10.0));
-        assert_eq!(EMPTY_MAX_WIDTH.to_pixels(px(16.0)), px(384.0));
-        assert_eq!(EMPTY_ICON_SIZE.to_pixels(px(16.0)), px(32.0));
-        assert_eq!(RELAXED_LINE_HEIGHT.to_pixels(px(16.0)), px(22.75));
-
-        assert_eq!(EMPTY_MAX_WIDTH.to_pixels(px(18.0)), px(432.0));
-        assert_eq!(EMPTY_ICON_SIZE.to_pixels(px(18.0)), px(36.0));
-        assert_eq!(RELAXED_LINE_HEIGHT.to_pixels(px(18.0)), px(25.59375));
+impl Default for Empty {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Styled for Empty {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+impl ParentElement for Empty {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.children.extend(elements);
+    }
+}
+fn styled_part(style: &StyleRefinement) -> Div {
+    let mut part = div();
+    part.style().refine(style);
+    part
+}
+impl RenderOnce for Empty {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let recipe = presentation(window, cx);
+        let mut root = styled_part(&recipe.root);
+        root.style().refine(&self.style);
+        if self.media.is_some() || self.title.is_some() || self.description.is_some() {
+            let mut header = styled_part(&recipe.header);
+            header.style().refine(&self.header_style);
+            if let Some((variant, render)) = self.media {
+                let mut media = styled_part(&recipe.media);
+                if variant == EmptyMediaVariant::Icon {
+                    media.style().refine(&recipe.icon_media);
+                }
+                header = header.child(media.child(render(recipe.icon_size)));
+            }
+            if let Some(title) = self.title {
+                header = header.child(styled_part(&recipe.title).child(title));
+            }
+            if let Some(description) = self.description {
+                header = header.child(styled_part(&recipe.description).child(description));
+            }
+            root = root.child(header);
+        }
+        if let Some(content) = self.content {
+            let mut slot = styled_part(&recipe.content);
+            slot.style().refine(&self.content_style);
+            root = root.child(slot.child(content));
+        }
+        root.children(self.children)
     }
 }

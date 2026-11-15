@@ -1,616 +1,345 @@
-//! G2V's canonical native single-line input primitive.
-
+use crate::theme::Theme;
+use crate::ui::icon::{Icon, IconName};
+use crate::ui::utils::input_surface::{animated_appearance, motion_state};
+use crate::ui::utils::presentation::{ComponentTheme, ControlSize, ThemeScheme, nested_radius};
 use gpui::{
-    App, BoxShadow, ElementId, Entity, EntityId, FocusHandle, Focusable as _, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, RenderOnce, Role,
-    SharedString, Styled as _, Window, prelude::FluentBuilder as _,
+    App, ElementId, FocusHandle, IntoElement, ParentElement, Refineable, RenderOnce, SharedString,
+    StyleRefinement, Styled, Window, px,
 };
-use gpui_base::{
-    ElementExt as _, TextStyleToken, Transition as ValueTransition, TypographyTokens,
-    input::{Input as InputBehavior, InputBase, InputEditorStyle, InputState},
-    transition,
+use kinu_ui::{
+    ColorScheme, Input as InputPrimitive, NumberField, NumberFieldChange, NumberFieldFormat,
+    NumberFieldGroup, NumberFieldInput, NumberFieldStepper,
 };
 
-use crate::theme::border::BORDER_DEFAULT;
-use crate::theme::colors::G2VTheme;
-use crate::theme::motion::MotionTokens;
-use crate::theme::radius::RADIUS_MD;
-use crate::theme::shadows::{RING_3, focus_ring};
-use crate::theme::sizing::{SIZE_7, SIZE_8};
-use crate::theme::typography;
-
-use super::{TextStyleExt as _, is_compact};
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum InputSize {
-    #[default]
-    Default,
-    Small,
-}
-
-impl InputSize {
-    fn height(self) -> gpui::Rems {
-        match self {
-            Self::Default => SIZE_8,
-            Self::Small => SIZE_7,
-        }
-    }
-
-    fn text_style(self, typography: &TypographyTokens) -> TextStyleToken {
-        match self {
-            Self::Default => typography.sm,
-            Self::Small => TextStyleToken {
-                size: gpui::px(12.8),
-                ..typography.sm
-            },
-        }
-    }
-}
-
+/// An editable single-line field. Native Input owns text, selection, IME and Field binding.
 #[derive(IntoElement)]
-#[must_use]
 pub struct Input {
-    state: Entity<InputState>,
-    chrome: InputChrome,
-    size: InputSize,
-    disabled: bool,
-    readonly: bool,
-    invalid: bool,
-    accessibility_label: Option<SharedString>,
-    group_edges: Option<super::button_group::GroupEdges>,
+    id: ElementId,
+    primitive: InputPrimitive,
+    tokens: Option<ComponentTheme>,
+    style: StyleRefinement,
 }
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum InputChrome {
-    #[default]
-    Standalone,
-    Grouped,
-    Integrated,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub(super) struct InputPresentation {
-    foreground: Hsla,
-    muted_foreground: Hsla,
-    background: Hsla,
-    border: Hsla,
-    selection: Hsla,
-    caret: Hsla,
-    pub(super) disabled: bool,
-    pub(super) readonly: bool,
-}
-
-impl InputPresentation {
-    pub(super) fn new(theme: &G2VTheme, disabled: bool, readonly: bool) -> Self {
-        Self {
-            foreground: theme.foreground,
-            muted_foreground: theme.muted_foreground,
-            background: theme.background.opacity(0.0),
-            border: theme.border,
-            selection: theme.ring.opacity(0.3),
-            caret: theme.foreground,
-            disabled,
-            readonly,
-        }
-    }
-
-    pub(super) fn editor_style(self) -> InputEditorStyle {
-        InputEditorStyle {
-            foreground: self.foreground,
-            muted_foreground: self.muted_foreground,
-            background: self.background,
-            border: self.border,
-            selection: self.selection,
-            caret: self.caret,
-            ..InputEditorStyle::default()
-        }
-    }
-}
-
 impl Input {
-    /// A single-line editor whose surrounding surface owns border and background.
-    pub fn integrated(state: &Entity<InputState>) -> Self {
+    pub fn new(id: impl Into<ElementId>, value: impl Into<SharedString>) -> Self {
+        let id = id.into();
         Self {
-            chrome: InputChrome::Integrated,
-            ..Self::new(state)
+            id: id.clone(),
+            primitive: InputPrimitive::new(id, value),
+            tokens: None,
+            style: StyleRefinement::default(),
         }
     }
-
-    pub fn new(state: &Entity<InputState>) -> Self {
-        Self {
-            state: state.clone(),
-            chrome: InputChrome::Standalone,
-            size: InputSize::Default,
-            disabled: false,
-            readonly: false,
-            invalid: false,
-            accessibility_label: None,
-            group_edges: None,
-        }
-    }
-
-    pub fn grouped(state: &Entity<InputState>) -> Self {
-        Self {
-            state: state.clone(),
-            chrome: InputChrome::Grouped,
-            group_edges: None,
-            size: InputSize::Default,
-            disabled: false,
-            readonly: false,
-            invalid: false,
-            accessibility_label: None,
-        }
-    }
-
-    pub fn size(mut self, size: InputSize) -> Self {
-        self.size = size;
+    pub fn tokens(mut self, tokens: ComponentTheme) -> Self {
+        self.tokens = Some(tokens.clone());
         self
     }
-
+    pub fn placeholder(mut self, text: impl Into<SharedString>) -> Self {
+        self.primitive = self.primitive.placeholder(text);
+        self
+    }
+    pub fn accessibility_label(mut self, text: impl Into<SharedString>) -> Self {
+        self.primitive = self.primitive.accessibility_label(text);
+        self
+    }
     pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
+        self.primitive = self.primitive.disabled(disabled);
         self
     }
-
-    pub fn readonly(mut self, readonly: bool) -> Self {
-        self.readonly = readonly;
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.primitive = self.primitive.read_only(read_only);
         self
     }
-
     pub fn invalid(mut self, invalid: bool) -> Self {
-        self.invalid = invalid;
+        self.primitive = self.primitive.invalid(invalid);
         self
     }
-
-    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
-        self.accessibility_label = Some(label.into());
+    pub fn track_focus(mut self, focus: &FocusHandle) -> Self {
+        self.primitive = self.primitive.track_focus(focus);
+        self
+    }
+    pub fn on_change(
+        mut self,
+        handler: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.primitive = self.primitive.on_change(handler);
+        self
+    }
+    pub fn on_submit(
+        mut self,
+        handler: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.primitive = self.primitive.on_submit(handler);
         self
     }
 }
-
+impl Styled for Input {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
 impl RenderOnce for Input {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let grouped = self.group_edges.is_some();
-        let focus = self.state.focus_handle(cx);
-        let input = self.render_base(window, cx);
-        if grouped {
-            super::button_group::paint_group_control(input, &focus, window)
-        } else {
-            input.into_any_element()
-        }
+        let tokens = ComponentTheme::resolve(self.tokens.clone(), cx);
+        let now = cx.background_executor().now();
+        let motion = motion_state(self.id, window, cx);
+        let mut primitive =
+            self.primitive
+                .appearance(animated_appearance(tokens.clone(), motion.clone(), now));
+        primitive.style().refine(&self.style);
+        let element: gpui::AnyElement = primitive.render(window, cx).into_any_element();
+        element
     }
 }
-
-impl Input {
-    pub(crate) fn in_button_group(mut self, edges: super::button_group::GroupEdges) -> Self {
-        self.chrome = InputChrome::Standalone;
-        self.group_edges = Some(edges);
+impl kinu_ui::FieldControl for Input {
+    type Value = SharedString;
+    fn field_value(&self) -> Self::Value {
+        kinu_ui::FieldControl::field_value(&self.primitive)
+    }
+    fn field_filled(&self) -> bool {
+        kinu_ui::FieldControl::field_filled(&self.primitive)
+    }
+    fn field_disabled(&self) -> bool {
+        kinu_ui::FieldControl::field_disabled(&self.primitive)
+    }
+    fn field_requires_value(&self) -> bool {
+        kinu_ui::FieldControl::field_requires_value(&self.primitive)
+    }
+    fn field_label_behavior(&self) -> kinu_ui::FieldLabelBehavior {
+        kinu_ui::FieldControl::field_label_behavior(&self.primitive)
+    }
+    fn with_field(mut self, binding: kinu_ui::FieldControlBinding) -> Self {
+        self.primitive = kinu_ui::FieldControl::with_field(self.primitive, binding);
         self
     }
-
-    fn render_base(self, window: &mut Window, cx: &mut App) -> InputBase {
-        let theme = G2VTheme::global(cx).clone();
-        let is_dark = visual_is_dark(window.appearance());
-        let focused = self.state.focus_handle(cx).is_focused(window) && !self.disabled;
-        let visual_state =
-            InputVisualState::new(window.appearance(), focused, self.disabled, self.invalid);
-        let (border, background) =
-            animated_input_colors(self.state.entity_id(), &theme, visual_state, window, cx);
-        let typography = typography::tokens();
-        let text_style = if is_compact(window) {
-            typography.xs
-        } else {
-            self.size.text_style(&typography)
-        };
-
-        let presentation = InputPresentation::new(&theme, self.disabled, self.readonly);
-        let presentation_cache = window.use_keyed_state(
-            ("g2v-input-presentation", self.state.entity_id()),
-            cx,
-            |_, _| None::<InputPresentation>,
-        );
-        let input_state = self.state.clone();
-
-        let focus_handle = self.state.focus_handle(cx);
-        let input = InputBase::new(("g2v-input", self.state.entity_id()))
-            .role(Role::TextInput)
-            .focused(focused)
-            .disabled(self.disabled)
-            .when_some(self.accessibility_label, |input, label| {
-                input.accessibility_label(label)
-            })
-            .on_prepaint(move |_, _, cx| {
-                reconcile_presentation(&presentation_cache, presentation, cx, |cx| {
-                    input_state.update(cx, |state, cx| {
-                        state.set_editor_style(presentation.editor_style());
-                        state.set_disabled(presentation.disabled, cx);
-                        state.set_readonly(presentation.readonly, cx);
-                    });
-                });
-            })
-            .flex()
-            .items_center()
-            .w_full()
-            .min_w_0()
-            .h(self.size.height())
-            .text_style(text_style)
-            .when(self.chrome == InputChrome::Standalone, |input| {
-                input
-                    .px_2p5()
-                    .py_1()
-                    .rounded(RADIUS_MD)
-                    .border(BORDER_DEFAULT)
-                    .border_color(border)
-                    .bg(background)
-                    .when(self.disabled, |input| input.opacity(0.5))
-                    .when(self.invalid, |input| {
-                        input.shadow(invalid_ring(theme.destructive, is_dark))
-                    })
-            })
-            .when(self.chrome == InputChrome::Grouped, |input| {
-                input
-                    .flex_1()
-                    .min_w_0()
-                    .px_1p5()
-                    .bg(theme.background.opacity(0.0))
-            })
-            .when(self.chrome == InputChrome::Integrated, |input| {
-                input.bg(theme.background.opacity(0.0))
-            })
-            .when_some(self.group_edges, |input, edges| {
-                edges
-                    .apply(input)
-                    .flex_1()
-                    .debug_selector(|| "button-group-input".into())
-            })
-            .child(InputBehavior::new(&self.state));
-
-        with_text_control_pointer_contract(input, focus_handle, self.disabled)
-    }
-}
-
-pub(super) fn with_text_control_pointer_contract(
-    control: InputBase,
-    focus_handle: FocusHandle,
-    disabled: bool,
-) -> InputBase {
-    control
-        .when(disabled, |control| {
-            control.capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
-        })
-        .when(!disabled, |control| {
-            control.on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                focus_handle.focus(window, cx);
-            })
-        })
-}
-
-pub(super) fn reconcile_presentation<P, F>(
-    cache: &Entity<Option<P>>,
-    desired: P,
-    cx: &mut App,
-    apply: F,
-) where
-    P: Clone + PartialEq + 'static,
-    F: FnOnce(&mut App),
-{
-    if cache.read(cx).as_ref() == Some(&desired) {
-        return;
-    }
-    apply(cx);
-    cache.update(cx, |current, _| *current = Some(desired));
-}
-
-pub(super) const fn visual_is_dark(appearance: gpui::WindowAppearance) -> bool {
-    matches!(
-        appearance,
-        gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-    )
-}
-
-pub(super) fn input_background(theme: &G2VTheme, is_dark: bool, disabled: bool) -> Hsla {
-    if is_dark {
-        theme.input.opacity(if disabled { 0.8 } else { 0.3 })
-    } else if disabled {
-        theme.input.opacity(0.5)
-    } else {
-        theme.background.opacity(0.0)
-    }
-}
-
-pub(super) fn input_border(theme: &G2VTheme, is_dark: bool, focused: bool, invalid: bool) -> Hsla {
-    if invalid {
-        return theme.destructive.opacity(if is_dark { 0.5 } else { 1.0 });
-    }
-    if focused {
-        return theme.ring;
-    }
-    theme.input
-}
-
-pub(super) fn invalid_ring(color: Hsla, is_dark: bool) -> Vec<BoxShadow> {
-    focus_ring(color.opacity(if is_dark { 0.4 } else { 0.2 }), RING_3)
-}
-
-pub(super) fn input_text_style(
-    window: &Window,
-    typography: &gpui_base::TypographyTokens,
-) -> TextStyleToken {
-    if is_compact(window) {
-        typography.md
-    } else {
-        typography.sm
-    }
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct InputVisualState {
-    appearance: gpui::WindowAppearance,
-    focused: bool,
-    disabled: bool,
-    invalid: bool,
+struct NumberLayout {
+    button_size: f32,
+    inset: f32,
+    text_padding_end: f32,
+    icon_size: f32,
 }
 
-impl InputVisualState {
-    pub(super) const fn new(
-        appearance: gpui::WindowAppearance,
-        focused: bool,
-        disabled: bool,
-        invalid: bool,
-    ) -> Self {
-        Self {
-            appearance,
-            focused,
-            disabled,
-            invalid,
-        }
-    }
-
-    const fn is_dark(self) -> bool {
-        matches!(
-            self.appearance,
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-        )
+fn number_layout(size: ControlSize) -> NumberLayout {
+    match size {
+        ControlSize::Default => NumberLayout {
+            button_size: 28.,
+            inset: 4.,
+            text_padding_end: 68.,
+            icon_size: 16.,
+        },
+        ControlSize::Compact => NumberLayout {
+            button_size: 24.,
+            inset: 2.,
+            text_padding_end: 54.,
+            icon_size: 14.,
+        },
     }
 }
 
-pub(super) fn animated_input_colors(
-    id: EntityId,
-    theme: &G2VTheme,
-    state: InputVisualState,
-    window: &mut Window,
-    cx: &mut App,
-) -> (Hsla, Hsla) {
-    let policy = ValueTransition::new(MotionTokens::global(cx).fast);
-    let element_id = ElementId::from(("input", id));
-    let is_dark = state.is_dark();
-    let border = transition(
-        (element_id.clone(), "border"),
-        input_border(theme, is_dark, state.focused, state.invalid),
-        policy.clone(),
-        window,
-        cx,
-    );
-    let background = transition(
-        (element_id, "background"),
-        input_background(theme, is_dark, state.disabled),
-        policy,
-        window,
-        cx,
-    );
-    (border, background)
-}
-
-#[cfg(test)]
-pub(super) fn install_text_control_test_globals(cx: &mut gpui::TestAppContext) {
-    cx.update(|cx| {
-        gpui_base::init(cx);
-        crate::ui::init(cx);
-        crate::theme::typography::install(cx);
-        crate::theme::install(gpui::WindowAppearance::Light, cx);
-    });
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy)]
-pub(super) enum TextControlPolicy {
-    Enabled,
-    Disabled,
-    Readonly,
-}
-
-#[cfg(test)]
-impl TextControlPolicy {
-    pub(super) const fn disabled(self) -> bool {
-        matches!(self, Self::Disabled)
-    }
-
-    pub(super) const fn readonly(self) -> bool {
-        matches!(self, Self::Readonly)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::{
-        AppContext as _, Context, Element as _, Modifiers, Render, Role, TestAppContext,
-        VisualTestContext, WindowAppearance, accesskit, canvas, div, px,
-    };
-    use std::sync::{Arc, Mutex};
-
-    struct InputHarness {
-        state: Entity<InputState>,
-        policy: TextControlPolicy,
-    }
-
-    impl Render for InputHarness {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .debug_selector(|| "input-control".into())
-                .w(px(240.0))
-                .h(InputSize::Default.height())
-                .child(
-                    Input::new(&self.state)
-                        .accessibility_label("Project name")
-                        .disabled(self.policy.disabled())
-                        .readonly(self.policy.readonly()),
-                )
-        }
-    }
-
-    fn input_harness(
-        cx: &mut TestAppContext,
-        policy: TextControlPolicy,
-    ) -> (Entity<InputHarness>, &mut VisualTestContext) {
-        install_text_control_test_globals(cx);
-        let (harness, window) = cx.add_window_view(move |window, cx| InputHarness {
-            state: cx.new(|cx| InputState::new(window, cx)),
-            policy,
-        });
-        window.update(|window, cx| window.draw(cx).clear(cx));
-        window.update(|window, cx| window.draw(cx).clear(cx));
-        (harness, window)
-    }
-
-    #[gpui::test]
-    fn pointer_focus_and_keyboard_edit_the_enabled_input(cx: &mut TestAppContext) {
-        let (harness, window) = input_harness(cx, TextControlPolicy::Enabled);
-        let bounds = window.debug_bounds("input-control").unwrap();
-
-        window.simulate_click(bounds.center(), Modifiers::default());
-        window.simulate_keystrokes("g2v");
-
-        window.update(|window, cx| {
-            let state = harness.read(cx).state.clone();
-            assert!(
-                state.focus_handle(cx).is_focused(window),
-                "input did not focus after clicking bounds={bounds:?}, value={:?}",
-                state.read(cx).value()
-            );
-            assert_eq!(state.read(cx).value(), "g2v", "bounds={bounds:?}");
-        });
-    }
-
-    #[gpui::test]
-    fn disabled_and_readonly_input_policies_are_inert(cx: &mut TestAppContext) {
-        let (disabled, window) = input_harness(cx, TextControlPolicy::Disabled);
-        let bounds = window.debug_bounds("input-control").unwrap();
-        window.simulate_click(bounds.center(), Modifiers::default());
-        window.simulate_keystrokes("blocked");
-        window.update(|window, cx| {
-            let state = disabled.read(cx).state.clone();
-            assert!(!state.focus_handle(cx).is_focused(window));
-            assert!(state.read(cx).value().is_empty());
-        });
-
-        let (readonly, window) = input_harness(cx, TextControlPolicy::Readonly);
-        let bounds = window.debug_bounds("input-control").unwrap();
-        window.simulate_click(bounds.center(), Modifiers::default());
-        window.simulate_keystrokes("blocked");
-        window.update(|window, cx| {
-            let state = readonly.read(cx).state.clone();
-            assert!(state.focus_handle(cx).is_focused(window));
-            assert!(state.read(cx).value().is_empty());
-        });
-    }
-
-    #[gpui::test]
-    fn input_and_textarea_facades_expose_roles_and_labels(cx: &mut TestAppContext) {
-        type Captured = Arc<Mutex<Option<(accesskit::Node, accesskit::Node)>>>;
-
-        struct AccessibilityHarness {
-            input: Entity<InputState>,
-            textarea: Entity<gpui_base::input::TextareaState>,
-            captured: Captured,
-        }
-
-        impl Render for AccessibilityHarness {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                let input = self.input.clone();
-                let textarea = self.textarea.clone();
-                let captured = self.captured.clone();
-                canvas(
-                    move |_, window, cx| {
-                        let mut input_node = accesskit::Node::new(Role::TextInput);
-                        Input::new(&input)
-                            .accessibility_label("Project name")
-                            .render_base(window, cx)
-                            .render(window, cx)
-                            .into_element()
-                            .write_a11y_info(&mut input_node);
-
-                        let mut textarea_node = accesskit::Node::new(Role::MultilineTextInput);
-                        crate::ui::textarea::Textarea::new(&textarea)
-                            .accessibility_label("Message")
-                            .render_base(window, cx)
-                            .render(window, cx)
-                            .into_element()
-                            .write_a11y_info(&mut textarea_node);
-                        *captured.lock().unwrap() = Some((input_node, textarea_node));
-                    },
-                    |_, (), _, _| {},
-                )
+fn number_stepper(
+    label: &'static str,
+    icon: IconName,
+    right: f32,
+    layout: NumberLayout,
+    tokens: ComponentTheme,
+    colors: &Theme,
+) -> NumberFieldStepper {
+    NumberFieldStepper::new(label)
+        .absolute()
+        .top(px(layout.inset))
+        .right(px(right))
+        .size(px(layout.button_size))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(nested_radius(
+            tokens.shape.radii(&tokens).item,
+            layout.inset,
+            0.,
+        )))
+        .text_color(gpui::Hsla::from(colors.muted_foreground))
+        .hover({
+            let __theme_colors_foreground = colors.foreground;
+            let __theme_colors_hover = colors.hover();
+            move |style| {
+                style
+                    .bg(__theme_colors_hover)
+                    .text_color(gpui::Hsla::from(__theme_colors_foreground))
             }
+        })
+        .transition(gpui::StyleTransition::colors(
+            tokens.motion.animations.color.animation(),
+        ))
+        .child(Icon::new(icon).size(layout.icon_size).stroke_width(1.5))
+}
+
+/// A controlled numeric field. Native NumberField owns parsing, stepping and text services.
+#[derive(IntoElement)]
+pub struct NumberInput {
+    id: ElementId,
+    primitive: NumberField,
+    placeholder: SharedString,
+    tokens: Option<ComponentTheme>,
+    input_style: StyleRefinement,
+    style: StyleRefinement,
+}
+
+impl NumberInput {
+    pub fn new(id: impl Into<ElementId>, value: Option<f64>) -> Self {
+        let id = id.into();
+        Self {
+            id: id.clone(),
+            primitive: NumberField::new(id, value),
+            placeholder: "".into(),
+            tokens: None,
+            input_style: StyleRefinement::default(),
+            style: StyleRefinement::default(),
         }
-
-        install_text_control_test_globals(cx);
-        let captured: Captured = Arc::new(Mutex::new(None));
-        let result = captured.clone();
-        let (_, window) = cx.add_window_view(move |window, cx| AccessibilityHarness {
-            input: cx.new(|cx| InputState::new(window, cx)),
-            textarea: cx.new(|cx| gpui_base::input::TextareaState::new(window, cx)),
-            captured,
-        });
-        window.update(|window, cx| window.draw(cx).clear(cx));
-
-        let (input, textarea) = result.lock().unwrap().take().unwrap();
-        assert_eq!(input.role(), Role::TextInput);
-        assert_eq!(input.label(), Some("Project name"));
-        assert_eq!(textarea.role(), Role::MultilineTextInput);
-        assert_eq!(textarea.label(), Some("Message"));
     }
-
-    #[test]
-    fn sizes_match_the_react_input_contract() {
-        assert_eq!(InputSize::Default.height().to_pixels(px(16.0)), px(32.0));
-        assert_eq!(InputSize::Small.height().to_pixels(px(16.0)), px(28.0));
-        assert_eq!(InputSize::Default.height().to_pixels(px(18.0)), px(36.0));
+    pub fn tokens(mut self, tokens: ComponentTheme) -> Self {
+        self.tokens = Some(tokens.clone());
+        self
     }
-
-    #[test]
-    fn radius_and_border_match_the_react_input_contract() {
-        assert_eq!(RADIUS_MD, px(10.56));
-        assert_eq!(BORDER_DEFAULT, px(0.5));
+    pub fn placeholder(mut self, text: impl Into<SharedString>) -> Self {
+        self.placeholder = text.into();
+        self
     }
-
-    #[test]
-    fn editor_caret_uses_foreground_in_dark_mode() {
-        let theme = G2VTheme::for_appearance(WindowAppearance::Dark);
-        let style = InputPresentation::new(&theme, false, false).editor_style();
-
-        assert_eq!(style.caret, theme.foreground);
-        assert_eq!(style.muted_foreground, theme.muted_foreground);
+    pub fn accessibility_label(mut self, text: impl Into<SharedString>) -> Self {
+        self.primitive = self.primitive.accessibility_label(text);
+        self
     }
-
-    #[test]
-    fn invalid_state_takes_precedence_over_focus() {
-        let theme = G2VTheme::for_appearance(WindowAppearance::Light);
-
-        assert_eq!(input_border(&theme, false, true, true), theme.destructive);
+    pub fn min(mut self, value: f64) -> Self {
+        self.primitive = self.primitive.min(value);
+        self
     }
+    pub fn max(mut self, value: f64) -> Self {
+        self.primitive = self.primitive.max(value);
+        self
+    }
+    pub fn step(mut self, value: f64) -> Self {
+        self.primitive = self.primitive.step(value);
+        self
+    }
+    pub fn format(mut self, format: NumberFieldFormat) -> Self {
+        self.primitive = self.primitive.format(format);
+        self
+    }
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.primitive = self.primitive.disabled(disabled);
+        self
+    }
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.primitive = self.primitive.read_only(read_only);
+        self
+    }
+    pub fn track_focus(mut self, focus: &FocusHandle) -> Self {
+        self.primitive = self.primitive.track_focus(focus);
+        self
+    }
+    pub fn input_style(mut self, style: StyleRefinement) -> Self {
+        self.input_style = style;
+        self
+    }
+    pub fn on_change(
+        mut self,
+        handler: impl Fn(&NumberFieldChange, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.primitive = self.primitive.on_change(handler);
+        self
+    }
+    pub fn on_value_committed(
+        mut self,
+        handler: impl Fn(&NumberFieldChange, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.primitive = self.primitive.on_value_committed(handler);
+        self
+    }
+}
 
-    #[test]
-    fn dark_background_matches_the_shadcn_opacity_contract() {
-        let theme = G2VTheme::for_appearance(WindowAppearance::Dark);
+impl Styled for NumberInput {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
 
-        assert_eq!(
-            input_background(&theme, true, false),
-            theme.input.opacity(0.3)
-        );
-        assert_eq!(
-            input_background(&theme, true, true),
-            theme.input.opacity(0.8)
-        );
+impl RenderOnce for NumberInput {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let tokens = ComponentTheme::resolve(self.tokens.clone(), cx);
+
+        let scheme = if ColorScheme::current(window, cx) == ColorScheme::Dark {
+            ThemeScheme::Dark
+        } else {
+            ThemeScheme::Light
+        };
+        let colors = tokens.extras(scheme);
+        let layout = number_layout(tokens.size);
+        let now = cx.background_executor().now();
+        let motion = motion_state(self.id, window, cx);
+        let appearance = animated_appearance(tokens.clone(), motion.clone(), now);
+        let mut input = NumberFieldInput::new()
+            .placeholder(self.placeholder)
+            .appearance(move |state, window, cx| {
+                let mut appearance = appearance(state, window, cx);
+                // The group owns disabled opacity so the overlaid steppers dim once with the field.
+                appearance.style = appearance.style.opacity(1.).pr(px(layout.text_padding_end));
+                appearance
+            });
+        input.style().refine(&self.input_style);
+        let mut primitive = self
+            .primitive
+            .input(input)
+            .group(
+                NumberFieldGroup::new()
+                    .relative()
+                    .w_full()
+                    .min_w(px(0.))
+                    .when_disabled(|style| style.opacity(0.5)),
+            )
+            .decrement(number_stepper(
+                "Decrease",
+                IconName::Minus,
+                layout.inset + layout.button_size,
+                layout,
+                tokens.clone(),
+                colors,
+            ))
+            .increment(number_stepper(
+                "Increase",
+                IconName::Plus,
+                layout.inset,
+                layout,
+                tokens.clone(),
+                colors,
+            ))
+            .w_full()
+            .min_w(px(0.));
+        primitive.style().refine(&self.style);
+        let element: gpui::AnyElement = primitive.render(window, cx).into_any_element();
+        element
+    }
+}
+
+impl kinu_ui::FieldControl for NumberInput {
+    type Value = Option<f64>;
+    fn field_value(&self) -> Self::Value {
+        kinu_ui::FieldControl::field_value(&self.primitive)
+    }
+    fn field_filled(&self) -> bool {
+        kinu_ui::FieldControl::field_filled(&self.primitive)
+    }
+    fn field_disabled(&self) -> bool {
+        kinu_ui::FieldControl::field_disabled(&self.primitive)
+    }
+    fn field_requires_value(&self) -> bool {
+        kinu_ui::FieldControl::field_requires_value(&self.primitive)
+    }
+    fn field_label_behavior(&self) -> kinu_ui::FieldLabelBehavior {
+        kinu_ui::FieldControl::field_label_behavior(&self.primitive)
+    }
+    fn with_field(mut self, binding: kinu_ui::FieldControlBinding) -> Self {
+        self.primitive = kinu_ui::FieldControl::with_field(self.primitive, binding);
+        self
     }
 }

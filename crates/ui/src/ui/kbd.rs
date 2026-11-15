@@ -1,179 +1,156 @@
-//! Keyboard-key presentation primitives.
-
+use crate::ui::utils::presentation::{ComponentTheme, ControlSize, TextRole, ThemeScheme};
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement, RenderOnce, SharedString, StyleRefinement, Styled,
-    Window, div, prelude::FluentBuilder as _,
+    AnyElement, App, ElementContextScope, IntoElement, ParentElement, Refineable, RenderOnce,
+    StyleRefinement, Styled, Window, div, px,
 };
-use gpui_base::StyledExt as _;
+use kinu_ui::ColorScheme;
 
-use crate::theme::colors::G2VTheme;
-use crate::theme::radius::RADIUS_SM;
-use crate::theme::sizing::{SIZE_3, SIZE_5};
-use crate::theme::typography;
-
-use super::{Icon, IconName, TextStyleExt as _};
-
-const HEIGHT: gpui::Rems = SIZE_5;
-const MIN_WIDTH: gpui::Rems = SIZE_5;
-const ICON_SIZE: gpui::Rems = SIZE_3;
-
-#[derive(IntoElement, Default)]
-#[must_use]
-pub struct Kbd {
-    label: Option<SharedString>,
-    icon: Option<IconName>,
-    children: Vec<AnyElement>,
-    in_tooltip: bool,
-    style: StyleRefinement,
+/// The surrounding surface changes keyboard-hint contrast without changing its meaning.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KbdSurface {
+    #[default]
+    Default,
+    Tooltip,
+    InputGroup,
+}
+impl KbdSurface {
+    pub fn scope(self, child: impl IntoElement) -> impl IntoElement {
+        ElementContextScope::new(self, child)
+    }
+}
+pub(crate) struct Presentation {
+    pub(crate) key: StyleRefinement,
+    pub(crate) group: StyleRefinement,
+}
+pub(crate) fn presentation(surface: KbdSurface, window: &Window, cx: &App) -> Presentation {
+    presentation_with_tokens(surface, &ComponentTheme::current(cx), window, cx)
 }
 
+pub(crate) fn presentation_with_tokens(
+    surface: KbdSurface,
+    tokens: &ComponentTheme,
+    window: &Window,
+    cx: &App,
+) -> Presentation {
+    let colors = tokens.extras(if ColorScheme::current(window, cx) == ColorScheme::Dark {
+        ThemeScheme::Dark
+    } else {
+        ThemeScheme::Light
+    });
+    let metrics = TextRole::Micro.metrics(tokens.size, tokens);
+    let height = if tokens.size == ControlSize::Compact {
+        16.
+    } else {
+        20.
+    };
+    let mut key = StyleRefinement::default()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w_auto()
+        .h(px(height))
+        .min_w(px(height))
+        .gap(px(4.))
+        .px(px(4.))
+        .rounded(px(5.))
+        .font_family(tokens.typography.family.clone())
+        .text_size(px(metrics.size))
+        .line_height(px(metrics.line_height))
+        .bg(colors.hover())
+        .text_color(gpui::Hsla::from(colors.muted_foreground));
+    match surface {
+        KbdSurface::Default | KbdSurface::InputGroup => {}
+        KbdSurface::Tooltip => {
+            key = key
+                .h(px(16.))
+                .min_w(px(16.))
+                .rounded(px(4.))
+                .border_1()
+                .bg(gpui::transparent_black())
+                .border_color(gpui::Hsla::from(colors.background).opacity(0.3))
+                .text_color(gpui::Hsla::from(colors.background));
+        }
+    }
+    let group = StyleRefinement::default().flex().items_center().gap(px(4.));
+    Presentation { key, group }
+}
+
+/// A static keyboard key or shortcut hint, without registering a key binding.
+#[derive(IntoElement, Default)]
+pub struct Kbd {
+    surface: Option<KbdSurface>,
+    style: StyleRefinement,
+    children: Vec<AnyElement>,
+}
 impl Kbd {
     pub fn new() -> Self {
         Self::default()
     }
-
-    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
-        self.label = Some(label.into());
+    pub fn surface(mut self, surface: KbdSurface) -> Self {
+        self.surface = Some(surface);
         self
     }
-
-    pub fn icon(mut self, icon: IconName) -> Self {
-        self.icon = Some(icon);
-        self
-    }
-
-    pub fn in_tooltip(mut self) -> Self {
-        self.in_tooltip = true;
+    /// Applies the default 12px icon size only when the icon has no explicit size.
+    pub fn icon(mut self, mut icon: impl IntoElement + Styled) -> Self {
+        if icon.style().size.width.is_none() && icon.style().size.height.is_none() {
+            icon = icon.size(px(12.));
+        }
+        self.children.push(icon.into_any_element());
         self
     }
 }
-
-impl ParentElement for Kbd {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
-    }
-}
-
 impl Styled for Kbd {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
 }
-
+impl ParentElement for Kbd {
+    fn extend(&mut self, children: impl IntoIterator<Item = AnyElement>) {
+        self.children.extend(children);
+    }
+}
 impl RenderOnce for Kbd {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = G2VTheme::global(cx);
-        let is_dark = matches!(
-            window.appearance(),
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-        );
-        let (background, foreground) = kbd_colors(theme, is_dark, self.in_tooltip);
-        let typography = typography::tokens();
-
-        div()
-            .flex()
-            .flex_shrink_0()
-            .h(HEIGHT)
-            .w_auto()
-            .min_w(MIN_WIDTH)
-            .items_center()
-            .justify_center()
-            .gap_1()
-            .rounded(RADIUS_SM)
-            .bg(background)
-            .px_1()
-            .text_style(typography.xs)
-            .text_color(foreground)
-            .refine_style(&self.style)
-            .when_some(self.icon, |element, icon| {
-                element.child(Icon::new(icon, ICON_SIZE).color(foreground))
-            })
-            .children(self.children)
-            .when_some(self.label, gpui::ParentElement::child)
+        let surface = self
+            .surface
+            .or_else(|| window.element_context::<KbdSurface>().copied())
+            .unwrap_or(KbdSurface::Default);
+        let p = presentation(surface, window, cx);
+        let mut key = div().children(self.children);
+        key.style().refine(&p.key);
+        key.style().refine(&self.style);
+        key
     }
 }
 
-fn kbd_colors(theme: &G2VTheme, is_dark: bool, in_tooltip: bool) -> (gpui::Hsla, gpui::Hsla) {
-    if in_tooltip {
-        (
-            theme
-                .popover_foreground
-                .opacity(if is_dark { 0.1 } else { 0.08 }),
-            theme.popover_foreground,
-        )
-    } else {
-        (theme.muted, theme.muted_foreground)
-    }
-}
-
+/// A static inline row of key hints and optional separators.
 #[derive(IntoElement, Default)]
-#[must_use]
 pub struct KbdGroup {
     children: Vec<AnyElement>,
     style: StyleRefinement,
 }
-
 impl KbdGroup {
     pub fn new() -> Self {
         Self::default()
     }
 }
-
-impl ParentElement for KbdGroup {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
-    }
-}
-
 impl Styled for KbdGroup {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
 }
-
-impl RenderOnce for KbdGroup {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .refine_style(&self.style)
-            .children(self.children)
+impl ParentElement for KbdGroup {
+    fn extend(&mut self, children: impl IntoIterator<Item = AnyElement>) {
+        self.children.extend(children);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::WindowAppearance;
-    use gpui::px;
-
-    #[test]
-    fn dimensions_match_the_react_kbd_contract() {
-        assert_eq!(HEIGHT.to_pixels(px(16.0)), px(20.0));
-        assert_eq!(MIN_WIDTH.to_pixels(px(16.0)), px(20.0));
-        assert_eq!(ICON_SIZE.to_pixels(px(16.0)), px(12.0));
-        assert_eq!(RADIUS_SM, px(7.92));
-    }
-
-    #[test]
-    fn tooltip_colors_match_light_and_dark_ancestor_variants() {
-        let light = G2VTheme::for_appearance(WindowAppearance::Light);
-        let dark = G2VTheme::for_appearance(WindowAppearance::Dark);
-
-        assert_eq!(
-            kbd_colors(&light, false, true),
-            (
-                light.popover_foreground.opacity(0.08),
-                light.popover_foreground
-            )
-        );
-        assert_eq!(
-            kbd_colors(&dark, true, true),
-            (
-                dark.popover_foreground.opacity(0.1),
-                dark.popover_foreground
-            )
-        );
+impl RenderOnce for KbdGroup {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let mut group = div().children(self.children);
+        group
+            .style()
+            .refine(&presentation(KbdSurface::Default, window, cx).group);
+        group.style().refine(&self.style);
+        group
     }
 }

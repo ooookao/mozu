@@ -1,4 +1,5 @@
-//! G2V-owned GPUI design tokens and reusable UI primitives.
-
+pub mod appearance;
+pub mod icons;
+pub mod motion;
 pub mod theme;
 pub mod ui;

@@ -1,375 +1,394 @@
-//! G2V's canonical native compound input primitive.
-
-use gpui::{
-    AnyElement, App, ElementId, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
-    IntoElement, ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _,
+use crate::ui::field::{
+    FieldLayout, field_error_with_tokens as field_error, field_label_with_tokens as field_label,
+    field_with_tokens as field,
 };
-use gpui_base::input::{InputState, TextareaState};
+use crate::ui::icon::{Icon, IconName};
+use crate::ui::utils::hover::{HoverAxis, HoverItem, HoverMotion, HoverTarget};
+use crate::ui::utils::motion::AnimatedArtwork;
+use crate::ui::utils::presentation::{ComponentTheme, ControlSize, ThemeScheme};
+use gpui::prelude::*;
+use gpui::{
+    App, Bounds, ElementId, FocusHandle, IntoElement, ParentElement, Refineable, RenderOnce,
+    SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, div, px,
+};
+use kinu_ui::{
+    ColorScheme, FieldErrorMatch, InputGroup as NativeInputGroup, InputGroupAddonKind,
+    InputGroupAppearance, InputGroupControlAppearance,
+};
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::Duration;
 
-use crate::theme::border::BORDER_DEFAULT;
-use crate::theme::colors::G2VTheme;
-use crate::theme::radius::{RADIUS_2XL, RADIUS_MD};
-use crate::theme::shadows;
-use crate::theme::sizing::{SIZE_7, SIZE_8};
-use crate::theme::typography;
-
-use super::input::{input_background, input_border};
-use super::{Input, InputSize, TextStyleExt as _, Textarea};
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum InputGroupAddonAlign {
-    #[default]
-    InlineStart,
-    InlineEnd,
-    BlockStart,
-    BlockEnd,
-}
-
-#[derive(IntoElement)]
-#[must_use]
-pub struct InputGroupAddon {
-    align: InputGroupAddonAlign,
-    content: AnyElement,
-    composer: bool,
-    inline_padding: Option<(gpui::Rems, gpui::Rems)>,
-}
-
-impl InputGroupAddon {
-    pub fn new(align: InputGroupAddonAlign, content: impl IntoElement) -> Self {
-        Self {
-            align,
-            content: content.into_any_element(),
-            composer: false,
-            inline_padding: None,
-        }
-    }
-
-    pub fn text(align: InputGroupAddonAlign, text: impl Into<SharedString>) -> Self {
-        Self::new(align, text.into())
-    }
-
-    pub fn composer(mut self) -> Self {
-        self.composer = true;
-        self
-    }
-
-    pub fn inline_padding(mut self, start: gpui::Rems, end: gpui::Rems) -> Self {
-        self.inline_padding = Some((start, end));
-        self
-    }
-
-    fn is_block(&self) -> bool {
-        matches!(
-            self.align,
-            InputGroupAddonAlign::BlockStart | InputGroupAddonAlign::BlockEnd
-        )
-    }
-}
-
-impl RenderOnce for InputGroupAddon {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = G2VTheme::global(cx);
-        let typography = typography::tokens();
-        let block = self.is_block();
-
-        div()
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .text_style(typography.sm)
-            .text_color(theme.muted_foreground)
-            .when(block && !self.composer, |addon| addon.w_full().px_2p5())
-            .when(block && self.composer, |addon| addon.w_full().px_2())
-            .when(!block, |addon| match self.inline_padding {
-                Some((start, end)) => addon.pl(start).pr(end),
-                None => addon.px_2(),
-            })
-            .when(self.align == InputGroupAddonAlign::BlockStart, |addon| {
-                addon.pt_2()
-            })
-            .when(
-                self.align == InputGroupAddonAlign::BlockEnd && !self.composer,
-                gpui::Styled::pb_2,
-            )
-            .when(
-                self.align == InputGroupAddonAlign::BlockEnd && self.composer,
-                |addon| addon.pt(gpui::Pixels::ZERO).pb_2(),
-            )
-            .child(self.content)
-    }
-}
-
-enum InputGroupControl {
-    Input(Entity<InputState>),
-    Textarea(Entity<TextareaState>),
-}
-
-impl InputGroupControl {
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        match self {
-            Self::Input(state) => state.focus_handle(cx),
-            Self::Textarea(state) => state.focus_handle(cx),
-        }
-    }
-
-    fn render(
-        &self,
-        variant: InputGroupVariant,
-        size: InputGroupSize,
-        disabled: bool,
-        readonly: bool,
-        invalid: bool,
-        accessibility_label: Option<SharedString>,
-    ) -> AnyElement {
-        match self {
-            Self::Input(state) => Input::grouped(state)
-                .size(match size {
-                    InputGroupSize::Default => InputSize::Default,
-                    InputGroupSize::Small => InputSize::Small,
-                })
-                .disabled(disabled)
-                .readonly(readonly)
-                .invalid(invalid)
-                .when_some(accessibility_label, |input, label| {
-                    input.accessibility_label(label)
-                })
-                .into_any_element(),
-            Self::Textarea(state) => if variant == InputGroupVariant::Composer {
-                Textarea::composer(state)
-            } else {
-                Textarea::grouped(state)
-            }
-            .disabled(disabled)
-            .readonly(readonly)
-            .invalid(invalid)
-            .when_some(accessibility_label, |textarea, label| {
-                textarea.accessibility_label(label)
-            })
-            .into_any_element(),
-        }
-    }
-}
-
-#[derive(IntoElement)]
-#[must_use]
-pub struct InputGroup {
+struct MeasuredField {
     id: ElementId,
-    control: InputGroupControl,
-    addons: Vec<InputGroupAddon>,
+    bounds: Rc<Cell<Bounds<gpui::Pixels>>>,
+    disabled: Rc<Cell<bool>>,
+}
+struct GroupVisual {
+    hover: HoverMotion,
+    fields: Vec<MeasuredField>,
+}
+
+/// A controlled text field presented inside a shared visual hover group.
+/// Native Field and InputGroup retain validation, text services and focus ownership.
+pub struct InputField {
+    id: ElementId,
+    label: SharedString,
+    primitive: NativeInputGroup,
+    icon: Option<IconName>,
+    error: Option<SharedString>,
+    label_hidden: bool,
     disabled: bool,
-    readonly: bool,
-    invalid: bool,
-    accessibility_label: Option<SharedString>,
-    variant: InputGroupVariant,
-    size: InputGroupSize,
 }
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum InputGroupVariant {
-    #[default]
-    Default,
-    Command,
-    CommandIntegrated,
-    Composer,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum InputGroupSize {
-    #[default]
-    Default,
-    Small,
-}
-
-impl InputGroupSize {
-    const fn height(self) -> gpui::Rems {
-        match self {
-            Self::Default => SIZE_8,
-            Self::Small => SIZE_7,
-        }
-    }
-}
-
-impl InputGroup {
-    pub fn input(id: impl Into<ElementId>, state: &Entity<InputState>) -> Self {
-        Self::new(id.into(), InputGroupControl::Input(state.clone()))
-    }
-
-    pub fn textarea(id: impl Into<ElementId>, state: &Entity<TextareaState>) -> Self {
-        Self::new(id.into(), InputGroupControl::Textarea(state.clone()))
-    }
-
-    pub(crate) fn command(id: impl Into<ElementId>, state: &Entity<InputState>) -> Self {
+impl InputField {
+    pub fn new(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        value: impl Into<SharedString>,
+    ) -> Self {
+        let id = id.into();
+        let label = label.into();
         Self {
-            variant: InputGroupVariant::Command,
-            ..Self::new(id.into(), InputGroupControl::Input(state.clone()))
-        }
-    }
-
-    pub(crate) fn command_integrated(id: impl Into<ElementId>, state: &Entity<InputState>) -> Self {
-        Self {
-            variant: InputGroupVariant::CommandIntegrated,
-            ..Self::new(id.into(), InputGroupControl::Input(state.clone()))
-        }
-    }
-
-    pub fn composer(id: impl Into<ElementId>, state: &Entity<TextareaState>) -> Self {
-        Self {
-            variant: InputGroupVariant::Composer,
-            ..Self::new(id.into(), InputGroupControl::Textarea(state.clone()))
-        }
-    }
-
-    fn new(id: ElementId, control: InputGroupControl) -> Self {
-        Self {
+            primitive: NativeInputGroup::new((id.clone(), "input"), value)
+                .accessibility_label(label.clone()),
             id,
-            control,
-            addons: Vec::new(),
+            label,
+            icon: None,
+            error: None,
+            label_hidden: false,
             disabled: false,
-            readonly: false,
-            invalid: false,
-            accessibility_label: None,
-            variant: InputGroupVariant::Default,
-            size: InputGroupSize::Default,
         }
     }
-
-    pub fn addon(mut self, addon: InputGroupAddon) -> Self {
-        self.addons.push(addon);
+    pub fn placeholder(mut self, value: impl Into<SharedString>) -> Self {
+        self.primitive = self.primitive.placeholder(value);
         self
     }
-
-    pub(crate) fn size(mut self, size: InputGroupSize) -> Self {
-        self.size = size;
+    pub fn icon(mut self, icon: IconName) -> Self {
+        self.icon = Some(icon);
         self
     }
-
+    pub fn error(mut self, message: impl Into<SharedString>) -> Self {
+        self.error = Some(message.into());
+        self
+    }
+    pub fn label_hidden(mut self, hidden: bool) -> Self {
+        self.label_hidden = hidden;
+        self
+    }
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self.primitive = self.primitive.disabled(disabled);
         self
     }
-
-    pub fn readonly(mut self, readonly: bool) -> Self {
-        self.readonly = readonly;
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.primitive = self.primitive.read_only(read_only);
         self
     }
-
-    pub fn invalid(mut self, invalid: bool) -> Self {
-        self.invalid = invalid;
+    pub fn track_focus(mut self, focus: &FocusHandle) -> Self {
+        self.primitive = self.primitive.track_focus(focus);
         self
     }
-
-    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
-        self.accessibility_label = Some(label.into());
+    pub fn on_change(
+        mut self,
+        change: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.primitive = self.primitive.on_change(change);
         self
+    }
+    pub fn on_submit(
+        mut self,
+        submit: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.primitive = self.primitive.on_submit(submit);
+        self
+    }
+}
+
+/// An explicit list of fields whose nearest-pointer highlight is presentation only.
+#[derive(IntoElement)]
+pub struct InputGroup {
+    id: ElementId,
+    fields: Vec<InputField>,
+    tokens: Option<ComponentTheme>,
+    style: StyleRefinement,
+}
+impl InputGroup {
+    pub fn new(id: impl Into<ElementId>) -> Self {
+        Self {
+            id: id.into(),
+            fields: Vec::new(),
+            tokens: None,
+            style: StyleRefinement::default(),
+        }
+    }
+    pub fn tokens(mut self, tokens: ComponentTheme) -> Self {
+        self.tokens = Some(tokens.clone());
+        self
+    }
+    pub fn field(mut self, field: InputField) -> Self {
+        assert!(
+            !self.fields.iter().any(|item| item.id == field.id),
+            "InputGroup field IDs must be unique"
+        );
+        self.fields.push(field);
+        self
+    }
+}
+impl Styled for InputGroup {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+fn appearance(
+    tokens: ComponentTheme,
+    scheme: ThemeScheme,
+    active: bool,
+    focused: bool,
+    invalid: bool,
+) -> InputGroupAppearance {
+    let colors = tokens.extras(scheme);
+    let metrics = tokens.size.metrics(&tokens);
+    InputGroupAppearance {
+        control: Rc::new({
+            let tokens = tokens.clone();
+            {
+                let __theme_colors_border = colors.border;
+                let __theme_colors_destructive = colors.destructive;
+                let __theme_colors_foreground = colors.foreground;
+                let __theme_colors_hover = colors.hover();
+                move |state| {
+                    let border = if focused && !state.disabled {
+                        gpui::Hsla::from(__theme_colors_foreground).opacity(0.4)
+                    } else if invalid {
+                        gpui::Hsla::from(__theme_colors_destructive).opacity(0.5)
+                    } else {
+                        gpui::Hsla::from(__theme_colors_border)
+                    };
+                    let shadow = |color| {
+                        vec![
+                            gpui::BoxShadow::new(px(0.), px(0.), color)
+                                .spread_radius(px(1.))
+                                .inset(),
+                        ]
+                    };
+                    let root = StyleRefinement::default()
+                        .h(px(metrics.control_height))
+                        .px(px(metrics.horizontal_padding))
+                        .gap(px(metrics.gap))
+                        .rounded(px(tokens.shape.radii(&tokens).item))
+                        .shadow(shadow(border))
+                        .bg(if active && !focused && !state.disabled {
+                            __theme_colors_hover
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .font_family(tokens.typography.family.clone())
+                        .font_weight(tokens.typography.normal.weight)
+                        .font_variations(tokens.typography.normal.variations())
+                        .text_size(px(metrics.text_size))
+                        .line_height(px(metrics.line_height))
+                        .text_color(gpui::Hsla::from(__theme_colors_foreground));
+                    InputGroupControlAppearance {
+                        root,
+                        input: StyleRefinement::default()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(metrics.line_height))
+                            .p_0()
+                            .border_0()
+                            .rounded_none()
+                            .bg(gpui::transparent_black())
+                            .shadow(Vec::new()),
+                        focus: StyleRefinement::default()
+                            .bg(gpui::transparent_black())
+                            .shadow(shadow(
+                                gpui::Hsla::from(__theme_colors_foreground).opacity(0.4),
+                            )),
+                        transition: Some(gpui::StyleTransition::text_shadow_background(
+                            tokens.motion.animations.color.animation(),
+                        )),
+                    }
+                }
+            }
+        }),
+        addon: Rc::new(move |_, _| StyleRefinement::default().p_0().mr(px(metrics.gap))),
+        placeholder: Some(gpui::Hsla::from(colors.muted_foreground)),
     }
 }
 
 impl RenderOnce for InputGroup {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = G2VTheme::global(cx).clone();
-        let is_dark = matches!(
-            window.appearance(),
-            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-        );
-        let focus_handle = self.control.focus_handle(cx);
-        let focused = focus_handle.is_focused(window) && !self.disabled;
-        let border = match self.variant {
-            InputGroupVariant::Default => input_border(&theme, is_dark, focused, self.invalid),
-            InputGroupVariant::Command if focused => theme.ring,
-            InputGroupVariant::Command => theme.input.opacity(0.3),
-            InputGroupVariant::CommandIntegrated => theme.popover.opacity(0.0),
-            InputGroupVariant::Composer => theme.input,
-        };
-        let background = match self.variant {
-            InputGroupVariant::Default => input_background(&theme, is_dark, self.disabled),
-            InputGroupVariant::Command => theme.input.opacity(0.3),
-            InputGroupVariant::CommandIntegrated => theme.popover,
-            InputGroupVariant::Composer => theme.composer,
-        };
-        let has_block_addon = self.addons.iter().any(InputGroupAddon::is_block);
-        let control = self.control.render(
-            self.variant,
-            self.size,
-            self.disabled,
-            self.readonly,
-            self.invalid,
-            self.accessibility_label,
-        );
-        let mut inline_start = Vec::new();
-        let mut inline_end = Vec::new();
-        let mut block_start = Vec::new();
-        let mut block_end = Vec::new();
+        let tokens = ComponentTheme::resolve(self.tokens.clone(), cx);
 
-        for addon in self.addons {
-            match addon.align {
-                InputGroupAddonAlign::InlineStart => inline_start.push(addon),
-                InputGroupAddonAlign::InlineEnd => inline_end.push(addon),
-                InputGroupAddonAlign::BlockStart => block_start.push(addon),
-                InputGroupAddonAlign::BlockEnd => block_end.push(addon),
-            }
-        }
-
-        let focus_on_click = focus_handle.clone();
-        div()
+        let scheme = if ColorScheme::current(window, cx) == ColorScheme::Dark {
+            ThemeScheme::Dark
+        } else {
+            ThemeScheme::Light
+        };
+        let visual =
+            window.use_keyed_state((self.id.clone(), "field-hover"), cx, |_, _| GroupVisual {
+                hover: HoverMotion::new(),
+                fields: Vec::new(),
+            });
+        visual.update(cx, |state, _| {
+            let mut previous = std::mem::take(&mut state.fields);
+            state.fields = self
+                .fields
+                .iter()
+                .map(|field| {
+                    if let Some(index) = previous.iter().position(|row| row.id == field.id) {
+                        previous.remove(index)
+                    } else {
+                        MeasuredField {
+                            id: field.id.clone(),
+                            bounds: Rc::new(Cell::new(Bounds::default())),
+                            disabled: Rc::new(Cell::new(field.disabled)),
+                        }
+                    }
+                })
+                .collect();
+        });
+        let active = visual.read(cx).hover.snapshot().active;
+        let mut root = div()
             .id(self.id)
             .relative()
-            .w_full()
-            .min_w_0()
             .flex()
-            .when(has_block_addon, gpui::Styled::flex_col)
-            .when(!has_block_addon, |group| {
-                group.items_center().h(self.size.height())
-            })
-            .rounded(match self.variant {
-                InputGroupVariant::Composer => RADIUS_2XL,
-                InputGroupVariant::CommandIntegrated => gpui::Pixels::ZERO,
-                InputGroupVariant::Default | InputGroupVariant::Command => RADIUS_MD,
-            })
-            .border(BORDER_DEFAULT)
-            .border_color(border)
-            .bg(background)
-            .when(self.variant == InputGroupVariant::Composer, |group| {
-                group
-                    .items_end()
-                    .gap_1p5()
-                    .shadow(shadows::tokens(window.appearance()).sm)
-            })
-            .when(
-                self.disabled && self.variant != InputGroupVariant::Composer,
-                |group| group.opacity(0.5),
+            .flex_col()
+            .gap(px(12.))
+            .w(px(288.))
+            .max_w_full();
+        for item in self.fields {
+            let measured = visual
+                .read(cx)
+                .fields
+                .iter()
+                .find(|row| row.id == item.id)
+                .expect("registered field");
+            let bounds = measured.bounds.clone();
+            let disabled = measured.disabled.clone();
+            let active = active.as_ref() == Some(&item.id);
+            let icon_id = item.id.clone();
+            let icon = item.icon;
+            let invalid = item
+                .error
+                .as_ref()
+                .is_some_and(|message| !message.is_empty());
+            let mut native = field(
+                item.id.clone(),
+                item.primitive,
+                FieldLayout::Vertical,
+                tokens.clone(),
+                window,
+                cx,
             )
-            .on_click(move |_, window, cx| focus_on_click.focus(window, cx))
-            .children(block_start)
-            .child(
+            .disabled(item.disabled)
+            .invalid(invalid)
+            .state_style(|state| {
+                StyleRefinement::default().opacity(if state.disabled { 0.5 } else { 1. })
+            })
+            .present_control({
+                let tokens = tokens.clone();
+                move |mut control, state, _| {
+                    disabled.set(state.disabled);
+                    control = control.appearance(appearance(
+                        tokens.clone(),
+                        scheme,
+                        active,
+                        state.focused,
+                        state.invalid(),
+                    ));
+                    if let Some(icon) = icon {
+                        control = control.start(
+                            {
+                                let emphasized = (active || state.focused) && !state.disabled;
+                                let colors = tokens.extras(scheme);
+                                let size = if tokens.size == ControlSize::Compact {
+                                    14.
+                                } else {
+                                    16.
+                                };
+                                AnimatedArtwork::new(
+                                    icon_id,
+                                    if emphasized {
+                                        gpui::Hsla::from(colors.foreground)
+                                    } else {
+                                        gpui::Hsla::from(colors.muted_foreground)
+                                    },
+                                    if emphasized { 2. } else { 1.5 },
+                                    Duration::from_millis(
+                                        tokens.motion.animations.color.duration_ms,
+                                    ),
+                                    tokens.motion.animations.color.easing,
+                                    move |color, stroke| {
+                                        Icon::new(icon)
+                                            .size(size)
+                                            .stroke_width(stroke)
+                                            .text_color(color)
+                                            .into_any_element()
+                                    },
+                                )
+                            },
+                            InputGroupAddonKind::Content,
+                        );
+                    }
+                    control
+                }
+            });
+            if !item.label_hidden {
+                native = native.label(field_label(
+                    item.label,
+                    FieldLayout::Vertical,
+                    tokens.clone(),
+                    window,
+                    cx,
+                ));
+            }
+            if let Some(error) = item.error.filter(|message| !message.is_empty()) {
+                native = native.error(
+                    field_error(FieldErrorMatch::Always, tokens.clone(), window, cx).message(error),
+                );
+            }
+            root = root.child(
                 div()
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .children(inline_start)
-                    .child(control)
-                    .children(inline_end),
-            )
-            .children(block_end)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::px;
-
-    #[test]
-    fn dimensions_match_the_react_input_group_contract() {
-        assert_eq!(SIZE_8.to_pixels(px(16.0)), px(32.0));
-        assert_eq!(RADIUS_MD, px(10.56));
-        assert_eq!(BORDER_DEFAULT, px(0.5));
-    }
-
-    #[test]
-    fn block_alignment_is_explicit() {
-        assert!(InputGroupAddon::text(InputGroupAddonAlign::BlockStart, "Label").is_block());
-        assert!(!InputGroupAddon::text(InputGroupAddonAlign::InlineEnd, "Label").is_block());
+                    .id((item.id, "measurement"))
+                    .child(native)
+                    .on_prepainted(move |rect, window, _| {
+                        bounds.set(window.element_to_window(rect))
+                    }),
+            );
+        }
+        root.style().refine(&self.style);
+        let pointer = visual.clone();
+        root.on_mouse_move(move |event, _, cx| {
+            pointer.update(cx, |state, cx| {
+                let items = state
+                    .fields
+                    .iter()
+                    .map(|row| HoverItem {
+                        id: row.id.clone(),
+                        bounds: row.bounds.get(),
+                        enabled: !row.disabled.get(),
+                    })
+                    .collect::<Vec<_>>();
+                if state.hover.update(
+                    event.position,
+                    &items,
+                    HoverAxis::Vertical,
+                    HoverTarget::Nearest,
+                ) {
+                    cx.notify();
+                }
+            });
+        })
+        .on_hover(move |hovered, _, cx| {
+            if !hovered {
+                visual.update(cx, |state, cx| {
+                    if state.hover.clear() {
+                        cx.notify();
+                    }
+                });
+            }
+        })
     }
 }

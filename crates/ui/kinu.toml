@@ -1,0 +1,9 @@
+version = 2
+root = "src/lib.rs"
+ui = "src/ui"
+theme = "src/theme.rs"
+base_color = "neutral"
+
+[sdk]
+kind = "registry"
+version = "0.2.1"

@@ -1,0 +1,507 @@
+radius = "0.625rem"
+font-sans = "Inter"
+font-mono = "JetBrains Mono"
+
+[light]
+brand = "#6B97FF"
+background = { from = "surfaces.one" }
+foreground = "oklch(0.145 0 0)"
+card = { from = "surfaces.three" }
+card-foreground = "oklch(0.145 0 0)"
+popover = "oklch(1 0 0)"
+popover-foreground = "oklch(0.145 0 0)"
+primary = "oklch(0.205 0 0)"
+primary-foreground = "oklch(0.985 0 0)"
+secondary = "oklch(0.97 0 0)"
+secondary-foreground = "oklch(0.205 0 0)"
+muted = "oklch(0.97 0 0)"
+muted-foreground = "oklch(0.556 0 0)"
+accent = "oklch(0.97 0 0)"
+accent-foreground = "oklch(0.205 0 0)"
+destructive = "oklch(0.577 0.245 27.325)"
+border = { from = "foreground", opacity = 0.12 }
+input = "oklch(0.922 0 0)"
+ring = "oklch(0.708 0 0)"
+chart-1 = "oklch(0.87 0 0)"
+chart-2 = "oklch(0.556 0 0)"
+chart-3 = "oklch(0.439 0 0)"
+chart-4 = "oklch(0.371 0 0)"
+chart-5 = "oklch(0.269 0 0)"
+sidebar = "oklch(0.985 0 0)"
+sidebar-foreground = "oklch(0.145 0 0)"
+sidebar-primary = "oklch(0.205 0 0)"
+sidebar-primary-foreground = "oklch(0.985 0 0)"
+sidebar-accent = "oklch(0.97 0 0)"
+sidebar-accent-foreground = "oklch(0.205 0 0)"
+sidebar-border = "oklch(0.922 0 0)"
+sidebar-ring = "oklch(0.708 0 0)"
+
+checker-a = "#bbbbbb"
+checker-b = "#ffffff"
+overlay = "#000000"
+tint-opacity = 0.08
+tint-hover-opacity = 0.065
+active-opacity = 0.07
+destructive-light = "#FEF2F2"
+destructive-fill = "oklch(0.637 0.237 25.331)"
+destructive-foreground = "oklch(0.505 0.213 27.518)"
+radio-border = "#A3A3A3"
+selected = "#D4D4D4"
+hover-opacity = 0.04
+thumb = "#FFFFFF"
+info = "#3B82F6"
+success = "#22C55E"
+warning = "#F59E0B"
+
+[light.syntax]
+foreground = "#202024"
+comment = "#6B6B75"
+string = "#27864A"
+number = "#2563A8"
+constant = "#9A6700"
+variable = "#A14F21"
+keyword = "#BE185D"
+function = "#6D28D9"
+type = "#7E22CE"
+punctuation = "#52525B"
+tag = "#B4233F"
+regex = "#0E7490"
+escape = "#0F766E"
+attribute = "#16834A"
+
+[light.surfaces]
+one = "#FAFAFA"
+two = "#FCFCFC"
+three = "#FFFFFF"
+four = "#FFFFFF"
+five = "#FFFFFF"
+six = "#FFFFFF"
+seven = "#FFFFFF"
+eight = "#FFFFFF"
+
+[light.shadows]
+one = [{ x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 6%)", inset = false }]
+two = [{ x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 6%)", inset = false }]
+three = [{ x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 6%)", inset = false }]
+four = [{ x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 6%)", inset = false }]
+five = [{ x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 12.0, blur = 12.0, spread = -6.0, color = "rgb(0 0 0 / 6%)", inset = false }]
+six = [{ x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 12.0, blur = 12.0, spread = -6.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 24.0, blur = 24.0, spread = -12.0, color = "rgb(0 0 0 / 6%)", inset = false }]
+seven = [{ x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 12.0, blur = 12.0, spread = -6.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 24.0, blur = 24.0, spread = -12.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 48.0, blur = 48.0, spread = -24.0, color = "rgb(0 0 0 / 6%)", inset = false }]
+eight = [{ x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 12.0, blur = 12.0, spread = -6.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 24.0, blur = 24.0, spread = -12.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 48.0, blur = 48.0, spread = -24.0, color = "rgb(0 0 0 / 6%)", inset = false }, { x = 0.0, y = 96.0, blur = 96.0, spread = -48.0, color = "rgb(0 0 0 / 6%)", inset = false }]
+
+
+[dark]
+brand = "#6B97FF"
+background = { from = "surfaces.one" }
+foreground = "oklch(0.985 0 0)"
+card = { from = "surfaces.three" }
+card-foreground = "oklch(0.985 0 0)"
+popover = "oklch(0.205 0 0)"
+popover-foreground = "oklch(0.985 0 0)"
+primary = "oklch(0.922 0 0)"
+primary-foreground = "oklch(0.205 0 0)"
+secondary = "oklch(0.269 0 0)"
+secondary-foreground = "oklch(0.985 0 0)"
+muted = "oklch(0.269 0 0)"
+muted-foreground = "oklch(0.708 0 0)"
+accent = "oklch(0.269 0 0)"
+accent-foreground = "oklch(0.985 0 0)"
+destructive = "oklch(0.704 0.191 22.216)"
+border = { from = "foreground", opacity = 0.12 }
+input = "oklch(1 0 0 / 15%)"
+ring = "oklch(0.556 0 0)"
+chart-1 = "oklch(0.87 0 0)"
+chart-2 = "oklch(0.556 0 0)"
+chart-3 = "oklch(0.439 0 0)"
+chart-4 = "oklch(0.371 0 0)"
+chart-5 = "oklch(0.269 0 0)"
+sidebar = "oklch(0.205 0 0)"
+sidebar-foreground = "oklch(0.985 0 0)"
+sidebar-primary = "oklch(0.488 0.243 264.376)"
+sidebar-primary-foreground = "oklch(0.985 0 0)"
+sidebar-accent = "oklch(0.269 0 0)"
+sidebar-accent-foreground = "oklch(0.985 0 0)"
+sidebar-border = "oklch(1 0 0 / 10%)"
+sidebar-ring = "oklch(0.556 0 0)"
+
+
+checker-a = "#1f1f1f"
+checker-b = "#2a2a2a"
+overlay = "#FFFFFF"
+tint-opacity = 0.25
+tint-hover-opacity = 0.20
+active-opacity = 0.10
+destructive-light = "#450A0A"
+destructive-fill = "oklch(0.637 0.237 25.331)"
+destructive-foreground = "oklch(0.704 0.191 22.216)"
+radio-border = "#737373"
+selected = "#525252"
+hover-opacity = 0.06
+thumb = "#FFFFFF"
+info = "#93C5FD"
+success = "#86EFAC"
+warning = "#FCD34D"
+
+[dark.syntax]
+foreground = "#F1F1F1"
+comment = "#8B8B94"
+string = "#6FCF97"
+number = "#60A5FA"
+constant = "#F4BF75"
+variable = "#F59E75"
+keyword = "#F472B6"
+function = "#A78BFA"
+type = "#C084FC"
+punctuation = "#71717A"
+tag = "#FB7185"
+regex = "#67E8F9"
+escape = "#5EEAD4"
+attribute = "#86EFAC"
+
+[dark.surfaces]
+one = "#171717"
+two = "#1E1E1E"
+three = "#252525"
+four = "#2C2C2C"
+five = "#333333"
+six = "#3A3A3A"
+seven = "#414141"
+eight = "#484848"
+
+[dark.shadows]
+one = [{ x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(255 255 255 / 2%)", inset = true }]
+two = [{ x = 0.0, y = 1.0, blur = 0.0, spread = 0.0, color = "rgb(255 255 255 / 1%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(255 255 255 / 2%)", inset = true }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 18%)", inset = false }]
+three = [{ x = 0.0, y = 1.0, blur = 0.0, spread = 0.0, color = "rgb(255 255 255 / 2%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(255 255 255 / 2%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 12%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 18%)", inset = false }]
+four = [{ x = 0.0, y = 1.0, blur = 0.0, spread = 0.0, color = "rgb(255 255 255 / 2%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(255 255 255 / 4%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 14%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 18%)", inset = false }]
+five = [{ x = 0.0, y = 1.0, blur = 0.0, spread = 0.0, color = "rgb(255 255 255 / 4%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(255 255 255 / 4%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 16%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 12.0, blur = 12.0, spread = -6.0, color = "rgb(0 0 0 / 18%)", inset = false }]
+six = [{ x = 0.0, y = 1.0, blur = 0.0, spread = 0.0, color = "rgb(255 255 255 / 4%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(255 255 255 / 6%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 12.0, blur = 12.0, spread = -6.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 24.0, blur = 24.0, spread = -12.0, color = "rgb(0 0 0 / 18%)", inset = false }]
+seven = [{ x = 0.0, y = 1.0, blur = 0.0, spread = 0.0, color = "rgb(255 255 255 / 6%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(255 255 255 / 6%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 20%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 12.0, blur = 12.0, spread = -6.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 24.0, blur = 24.0, spread = -12.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 48.0, blur = 48.0, spread = -24.0, color = "rgb(0 0 0 / 18%)", inset = false }]
+eight = [{ x = 0.0, y = 1.0, blur = 0.0, spread = 0.0, color = "rgb(255 255 255 / 6%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(255 255 255 / 6%)", inset = true }, { x = 0.0, y = 0.0, blur = 0.0, spread = 1.0, color = "rgb(0 0 0 / 22%)", inset = false }, { x = 0.0, y = 1.0, blur = 1.0, spread = -0.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 3.0, blur = 3.0, spread = -1.5, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 6.0, blur = 6.0, spread = -3.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 12.0, blur = 12.0, spread = -6.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 24.0, blur = 24.0, spread = -12.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 48.0, blur = 48.0, spread = -24.0, color = "rgb(0 0 0 / 18%)", inset = false }, { x = 0.0, y = 96.0, blur = 96.0, spread = -48.0, color = "rgb(0 0 0 / 18%)", inset = false }]
+
+
+[motion]
+
+[motion.fast]
+enter-ms = 80
+exit-ms = 60
+bounce = 0.0
+
+[motion.moderate]
+enter-ms = 160
+exit-ms = 120
+bounce = 0.0
+
+[motion.slow]
+enter-ms = 240
+exit-ms = 160
+bounce = 0.12
+
+[components]
+size = "default"
+shape = "rounded"
+
+[components.shapes]
+
+[components.shapes.rounded]
+item = 8.0
+focus = 10.0
+container = 12.0
+merged = 8.0
+
+[components.shapes.pill]
+item = 20.0
+focus = 22.0
+container = 24.0
+merged = 16.0
+
+[components.shapes.sharp]
+item = 1.0
+focus = 3.0
+container = 1.0
+merged = 1.0
+
+[components.sizes]
+
+[components.sizes.default]
+control-height = 36.0
+gap = 8.0
+horizontal-padding = 12.0
+
+[components.sizes.compact]
+control-height = 28.0
+gap = 4.0
+horizontal-padding = 10.0
+
+[components.type-scale]
+
+[components.type-scale.default]
+
+[components.type-scale.default.display]
+size = 28.0
+line-height = 34.0
+
+[components.type-scale.default.title]
+size = 16.0
+line-height = 22.0
+
+[components.type-scale.default.subtitle]
+size = 14.0
+line-height = 20.0
+
+[components.type-scale.default.body]
+size = 13.0
+line-height = 20.0
+
+[components.type-scale.default.caption]
+size = 12.0
+line-height = 16.0
+
+[components.type-scale.default.micro]
+size = 11.0
+line-height = 14.0
+
+[components.type-scale.compact]
+
+[components.type-scale.compact.display]
+size = 24.0
+line-height = 30.0
+
+[components.type-scale.compact.title]
+size = 15.0
+line-height = 20.0
+
+[components.type-scale.compact.subtitle]
+size = 13.0
+line-height = 18.0
+
+[components.type-scale.compact.body]
+size = 12.0
+line-height = 18.0
+
+[components.type-scale.compact.caption]
+size = 11.0
+line-height = 14.0
+
+[components.type-scale.compact.micro]
+size = 10.0
+line-height = 12.0
+
+[components.font-weights]
+
+[components.font-weights.normal]
+weight = 400.0
+optical-size = 14.0
+
+[components.font-weights.semibold]
+weight = 550.0
+optical-size = 18.0
+
+[components.font-weights.bold]
+weight = 700.0
+optical-size = 25.0
+
+[components.palette]
+gray = "#A3A3A3"
+red = "#EF4444"
+orange = "#F97316"
+amber = "#F59E0B"
+yellow = "#EAB308"
+lime = "#84CC16"
+green = "#22C55E"
+emerald = "#10B981"
+teal = "#14B8A6"
+cyan = "#06B6D4"
+blue = "#3B82F6"
+indigo = "#6366F1"
+violet = "#8B5CF6"
+purple = "#A855F7"
+fuchsia = "#D946EF"
+pink = "#EC4899"
+rose = "#F43F5E"
+
+[components.timings]
+slider-preview-ms = 100
+tooltip-delay-ms = 200
+scroll-fade-hold-ms = 160
+group-converge-ms = 310
+group-diverge-ms = 240
+selection-acknowledgement-ms = 300
+date-picker-selection-ack-ms = 200
+corner-delay-min-ms = 70
+corner-delay-max-ms = 100
+corner-delay-distance-ms = 2.0
+
+[motion.animations.control-slow]
+duration-ms = 200
+[ motion.animations.control-slow.easing ]
+x1 = 0.4
+y1 = 0.0
+x2 = 0.2
+y2 = 1.0
+
+
+[motion.animations.control]
+duration-ms = 150
+easing = { x1 = 0.4, y1 = 0.0, x2 = 0.2, y2 = 1.0 }
+
+[motion.animations.item]
+duration-ms = 100
+easing = { x1 = 0.4, y1 = 0.0, x2 = 0.2, y2 = 1.0 }
+
+[motion.animations.popup]
+duration-ms = 100
+easing = { x1 = 0.25, y1 = 0.1, x2 = 0.25, y2 = 1.0 }
+
+[motion.animations.tooltip]
+duration-ms = 150
+easing = { x1 = 0.25, y1 = 0.1, x2 = 0.25, y2 = 1.0 }
+
+[motion.animations.accordion]
+duration-ms = 200
+easing = { x1 = 0.0, y1 = 0.0, x2 = 0.58, y2 = 1.0 }
+
+[motion.animations.sheet]
+duration-ms = 200
+easing = { x1 = 0.4, y1 = 0.0, x2 = 0.2, y2 = 1.0 }
+
+[motion.animations.drawer]
+duration-ms = 450
+easing = { x1 = 0.22, y1 = 1.0, x2 = 0.36, y2 = 1.0 }
+
+[motion.animations.drawer-backdrop]
+duration-ms = 450
+easing = { x1 = 0.32, y1 = 0.72, x2 = 0.0, y2 = 1.0 }
+
+[motion.animations.toast]
+duration-ms = 500
+easing = { x1 = 0.22, y1 = 1.0, x2 = 0.36, y2 = 1.0 }
+
+[motion.animations.toast-height]
+duration-ms = 150
+easing = { x1 = 0.0, y1 = 0.0, x2 = 1.0, y2 = 1.0 }
+
+[motion.animations.toast-content]
+duration-ms = 250
+easing = { x1 = 0.22, y1 = 1.0, x2 = 0.36, y2 = 1.0 }
+
+[motion.animations.skeleton]
+duration-ms = 2000
+easing = { x1 = 0.4, y1 = 0.0, x2 = 0.6, y2 = 1.0 }
+
+[motion.animations.spinner]
+duration-ms = 1000
+easing = { x1 = 0.0, y1 = 0.0, x2 = 1.0, y2 = 1.0 }
+
+[motion.animations.backdrop]
+duration-ms = 150
+[motion.animations.backdrop.easing]
+x1 = 0.25
+y1 = 0.1
+x2 = 0.25
+y2 = 1.0
+
+[motion.animations.color]
+duration-ms = 80
+easing = { x1 = 0.4, y1 = 0.0, x2 = 0.2, y2 = 1.0 }
+
+[motion.curves.surface]
+x1 = 0.25
+y1 = 0.1
+x2 = 0.25
+y2 = 1.0
+
+[motion.curves.enter]
+x1 = 0.0
+y1 = 0.0
+x2 = 0.58
+y2 = 1.0
+
+[motion.curves.exit]
+x1 = 0.42
+y1 = 0.0
+x2 = 1.0
+y2 = 1.0
+
+[motion.curves.in-out]
+x1 = 0.42
+y1 = 0.0
+x2 = 0.58
+y2 = 1.0
+
+[motion.fast.exit-easing]
+x1 = 0.42
+y1 = 0.0
+x2 = 0.58
+y2 = 1.0
+
+[motion.moderate.exit-easing]
+x1 = 0.42
+y1 = 0.0
+x2 = 0.58
+y2 = 1.0
+
+[motion.slow.exit-easing]
+x1 = 0.42
+y1 = 0.0
+x2 = 0.58
+y2 = 1.0
+
+[motion.animations.accordion-enter]
+duration-ms = 60
+easing = { x1 = 0.42, y1 = 0.0, x2 = 0.58, y2 = 1.0 }
+
+[motion.animations.accordion-exit]
+duration-ms = 40
+easing = { x1 = 0.42, y1 = 0.0, x2 = 0.58, y2 = 1.0 }
+
+[motion.animations.tab-label]
+duration-ms = 60
+easing = { x1 = 0.0, y1 = 0.0, x2 = 1.0, y2 = 1.0 }
+
+[motion.animations.radio-dot-exit]
+duration-ms = 40
+easing = { x1 = 0.0, y1 = 0.0, x2 = 1.0, y2 = 1.0 }
+
+[motion.animations.loading-spinner]
+duration-ms = 1000
+easing = { x1 = 0.65, y1 = 0.0, x2 = 0.35, y2 = 1.0 }
+
+[motion.animations.loading-spinner-reduced]
+duration-ms = 2000
+easing = { x1 = 0.65, y1 = 0.0, x2 = 0.35, y2 = 1.0 }
+
+[motion.animations.press-enter]
+duration-ms = 80
+easing = { x1 = 0.23, y1 = 1.0, x2 = 0.32, y2 = 1.0 }
+
+[motion.animations.press-exit]
+duration-ms = 180
+easing = { x1 = 0.23, y1 = 1.0, x2 = 0.32, y2 = 1.0 }
+
+[motion.animations.check-draw]
+duration-ms = 80
+easing = { x1 = 0.0, y1 = 0.0, x2 = 0.58, y2 = 1.0 }
+
+[motion.animations.check-retract]
+duration-ms = 40
+easing = { x1 = 0.42, y1 = 0.0, x2 = 1.0, y2 = 1.0 }
+
+[motion.animations.arrow-rotation]
+duration-ms = 150
+easing = { x1 = 0.0, y1 = 0.0, x2 = 0.58, y2 = 1.0 }
+
+[motion.animations.label-weight]
+duration-ms = 100
+easing = { x1 = 0.4, y1 = 0.0, x2 = 0.2, y2 = 1.0 }
+
+[motion.animations.slider-label]
+duration-ms = 150
+easing = { x1 = 0.42, y1 = 0.0, x2 = 0.58, y2 = 1.0 }
+
+[motion.animations.scrollbar-enter]
+duration-ms = 160
+easing = { x1 = 0.0, y1 = 0.0, x2 = 0.58, y2 = 1.0 }
+
+[motion.animations.scrollbar-exit]
+duration-ms = 120
+easing = { x1 = 0.0, y1 = 0.0, x2 = 0.58, y2 = 1.0 }
