@@ -1,5 +1,5 @@
-use g2v_ui::theme::colors::G2VTheme;
 use gpui::{Hsla, Rgba, Window, WindowBackgroundAppearance, rgb};
+use mozu_ui::appearance::MozuTheme;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSTitlebarSeparatorStyle, NSToolbar, NSView,
@@ -13,7 +13,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 const BACKDROP_BLUR_RADIUS: f64 = 60.0;
 const BASE_TINT_ALPHA: f32 = 0.80;
 
-pub(crate) fn sidebar_tint(main: Hsla, theme: &G2VTheme) -> Hsla {
+pub(crate) fn sidebar_tint(main: Hsla, theme: &MozuTheme) -> Hsla {
     let base: Rgba = main.alpha(1.0).into();
     let accent: Rgba = theme.foreground.alpha(0.04).into();
     let tint: Hsla = base.blend(accent).into();
@@ -88,7 +88,7 @@ impl WindowMaterial {
         });
     }
 
-    pub(crate) fn tint(&self, theme: &G2VTheme) -> Hsla {
+    pub(crate) fn tint(&self, theme: &MozuTheme) -> Hsla {
         if self.opaque {
             return theme.background_solid;
         }

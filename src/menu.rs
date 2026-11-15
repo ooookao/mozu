@@ -1,7 +1,6 @@
 use gpui::{
     App, Context, KeyBinding, Menu, MenuItem, OsAction, PromptLevel, Window, WindowHandle, actions,
 };
-use gpui_base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplication;
 
@@ -19,6 +18,12 @@ actions!(
         Quit,
         Minimize,
         Zoom,
+        Copy,
+        Cut,
+        Paste,
+        Redo,
+        SelectAll,
+        Undo,
     ]
 );
 
@@ -44,6 +49,13 @@ pub(crate) fn install(console: WindowHandle<MozuApp>, cx: &mut App) {
     cx.on_action(move |_: &Zoom, cx| {
         on_console(console, cx, |_, window, _| window.zoom_window());
     });
+
+    install_edit_action(console, Copy, "cmd-c", cx);
+    install_edit_action(console, Cut, "cmd-x", cx);
+    install_edit_action(console, Paste, "cmd-v", cx);
+    install_edit_action(console, SelectAll, "cmd-a", cx);
+    install_edit_action(console, Undo, "cmd-z", cx);
+    install_edit_action(console, Redo, "cmd-shift-z", cx);
 
     cx.bind_keys([
         KeyBinding::new("cmd-,", OpenSettings, None),
@@ -121,5 +133,21 @@ fn update_error(console: WindowHandle<MozuApp>, error: String, cx: &mut App) {
             &["OK"],
             cx,
         ));
+    });
+}
+
+fn install_edit_action<A: gpui::Action>(
+    console: WindowHandle<MozuApp>,
+    _action: A,
+    key: &'static str,
+    cx: &mut App,
+) {
+    cx.on_action(move |_: &A, cx| {
+        on_console(console, cx, move |_, window, cx| {
+            window.dispatch_keystroke(
+                gpui::Keystroke::parse(key).expect("valid edit shortcut"),
+                cx,
+            );
+        });
     });
 }

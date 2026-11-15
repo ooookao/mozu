@@ -3,12 +3,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use g2v_ui::theme::{colors::G2VTheme, motion::cubic_bezier_with_overshoot};
 use gpui::{
     App, AppContext as _, Bounds, Context, Div, Hsla, IntoElement, MouseButton, Render, Window,
     WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, div, point,
     prelude::*, px, size,
 };
+use mozu_ui::{appearance::MozuTheme, motion::cubic_bezier_with_overshoot};
 use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSEvent, NSPanel, NSScreen, NSVisualEffectBlendingMode,
@@ -239,10 +239,11 @@ impl Island {
             window.remove_window();
             return None;
         };
-        let prefs = demo.preferences;
+        let show_island = demo.preferences.show_island;
+        let anchor = demo.preferences.anchor;
         let session = Session::read(demo);
         let spectrum = demo.screen.spectrum;
-        if !prefs.show_island {
+        if !show_island {
             if self.shown {
                 self.clear_ghosts(cx);
                 self.panel.orderOut(None);
@@ -264,7 +265,7 @@ impl Island {
             let visible = screen.visibleFrame();
             if visible != self.visible || !self.shown {
                 self.visible = visible;
-                self.anchor = prefs.anchor;
+                self.anchor = anchor;
                 self.apply_frame(self.anchor.frame(visible, self.scene.size()));
                 self.animation = None;
             }
@@ -280,8 +281,8 @@ impl Island {
             self.shown = true;
         }
 
-        if prefs.anchor != self.anchor && !self.dragging {
-            self.anchor = prefs.anchor;
+        if anchor != self.anchor && !self.dragging {
+            self.anchor = anchor;
             self.layout(cx);
         }
         let previous_session = self.session;
@@ -427,7 +428,7 @@ impl Island {
 
 impl Render for Island {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = G2VTheme::global(cx).clone();
+        let theme = MozuTheme::global(cx).clone();
         let scene = self.scene;
         let radius = px(radius(self.panel.frame().size) as f32);
         let tint = theme
@@ -551,7 +552,7 @@ struct Ghosts {
 
 impl Render for Ghosts {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = G2VTheme::global(cx);
+        let theme = MozuTheme::global(cx);
         div()
             .size_full()
             .relative()
