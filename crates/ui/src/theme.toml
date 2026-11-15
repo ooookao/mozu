@@ -198,7 +198,7 @@ bounce = 0.12
 
 [components]
 size = "default"
-shape = "rounded"
+shape = "pill"
 
 [components.shapes]
 
