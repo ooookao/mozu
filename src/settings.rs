@@ -1,28 +1,26 @@
+use crate::chatgpt::{self, Model, Vault};
 use std::path::Path;
 
-use g2v_ui::{
-    theme::{colors::G2VTheme, typography},
-    ui::{
-        Button, ButtonSize, ButtonVariant, IconName, Input, InputSize, InputState, Switch,
-        TextStyleExt as _,
-    },
-};
-use gpui::{Context, Entity, FontWeight, Hsla, IntoElement, Window, div, prelude::*, px};
-use gpui_base::input::InputEvent;
+use gpui::{Context, FocusHandle, IntoElement, Window, div, prelude::*, px, rems};
 use mozu_audio::{
     Cancellation, Error, HaasEngine, Result,
     models::HaasVariant,
     vocabulary::{Vocabulary, VocabularyConfig},
 };
+use mozu_ui::{
+    appearance::MozuTheme,
+    ui::{
+        Button, ButtonSize, ButtonVariant, Empty, EmptyMediaVariant, Icon, IconName, Input, Switch,
+    },
+};
 use objc2_app_kit::NSWorkspace;
 use objc2_avf_audio::{AVAudioApplication, AVAudioApplicationRecordPermission};
-use objc2_foundation::{NSURL, NSUserDefaults, ns_string};
+use objc2_foundation::{NSString, NSURL, NSUserDefaults, ns_string};
 
 use crate::{
     LoadedModels, MozuApp,
     history::{DictionaryEntry, History},
     island::Anchor,
-    segment_track,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -33,9 +31,10 @@ enum DictionaryForm {
 }
 
 pub(crate) struct DictionaryEditor {
-    written: Entity<InputState>,
-    reading: Entity<InputState>,
-    search: Entity<InputState>,
+    written: String,
+    reading: String,
+    search: String,
+    written_focus: FocusHandle,
     form: DictionaryForm,
     entries: Vec<DictionaryEntry>,
     error: Option<String>,
@@ -43,31 +42,12 @@ pub(crate) struct DictionaryEditor {
 }
 
 impl DictionaryEditor {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<MozuApp>) -> Self {
-        let written = cx.new(|cx| InputState::new(window, cx).placeholder("表記"));
-        let reading = cx.new(|cx| InputState::new(window, cx).placeholder("読み（任意）"));
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("単語を検索"));
-        cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify())
-            .detach();
-        for field in [&written, &reading] {
-            cx.subscribe_in(
-                field,
-                window,
-                |view, _, event: &InputEvent, window, cx| match event {
-                    InputEvent::PressEnter { .. } => save_dictionary(view, window, cx),
-                    InputEvent::Change => {
-                        view.dictionary.error = None;
-                        cx.notify();
-                    }
-                    _ => {}
-                },
-            )
-            .detach();
-        }
+    pub(crate) fn new(cx: &mut Context<MozuApp>) -> Self {
         Self {
-            written,
-            reading,
-            search,
+            written: String::new(),
+            reading: String::new(),
+            search: String::new(),
+            written_focus: cx.focus_handle(),
             form: DictionaryForm::Closed,
             entries: Vec::new(),
             error: None,
@@ -96,21 +76,17 @@ impl DictionaryEditor {
         let reading = entry
             .and_then(|entry| entry.reading.as_deref())
             .unwrap_or("");
-        self.written
-            .update(cx, |state, cx| state.set_value(written, window, cx));
-        self.reading
-            .update(cx, |state, cx| state.set_value(reading, window, cx));
-        self.written.update(cx, |state, cx| state.focus(window, cx));
+        self.written = written.to_owned();
+        self.reading = reading.to_owned();
+        window.focus(&self.written_focus, cx);
         cx.notify();
     }
 
-    fn close(&mut self, window: &mut Window, cx: &mut Context<MozuApp>) {
+    fn close(&mut self, _window: &mut Window, cx: &mut Context<MozuApp>) {
         self.form = DictionaryForm::Closed;
         self.error = None;
-        self.written
-            .update(cx, |state, cx| state.set_value("", window, cx));
-        self.reading
-            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.written.clear();
+        self.reading.clear();
         cx.notify();
     }
 
@@ -211,8 +187,8 @@ fn save_dictionary(view: &mut MozuApp, window: &Window, cx: &mut Context<MozuApp
         cx.notify();
         return;
     }
-    let written = view.dictionary.written.read(cx).value().trim().to_owned();
-    let reading = view.dictionary.reading.read(cx).value().trim().to_owned();
+    let written = view.dictionary.written.trim().to_owned();
+    let reading = view.dictionary.reading.trim().to_owned();
     if written.is_empty() {
         view.dictionary.error = Some("表記を入力してください。".into());
         cx.notify();
@@ -283,29 +259,60 @@ fn save_dictionary(view: &mut MozuApp, window: &Window, cx: &mut Context<MozuApp
 
 pub(crate) fn dictionary_add_button(view: &MozuApp, cx: &Context<MozuApp>) -> Button {
     Button::new("add-dictionary-word")
-        .icon(IconName::PlusMedium)
-        .size(ButtonSize::IconSmall)
+        .icon_start(Icon::new(IconName::PlusMedium, rems(1.0)))
+        .size(ButtonSize::IconSm)
         .variant(ButtonVariant::Ghost)
         .accessibility_label("単語を追加")
         .disabled(view.dictionary.saving || view.run.is_some() || view.models.is_busy())
         .on_click(cx.listener(|view, _, window, cx| {
-            view.dictionary
-                .search
-                .update(cx, |state, cx| state.set_value("", window, cx));
+            view.dictionary.search.clear();
             view.dictionary.open(DictionaryForm::New, window, cx);
         }))
 }
 
+fn dictionary_inputs(editor: &DictionaryEditor, cx: &Context<MozuApp>) -> (Input, Input) {
+    let submit =
+        std::rc::Rc::new(cx.listener(|view, _: &gpui::SharedString, window, cx| {
+            save_dictionary(view, window, cx)
+        }));
+    let submit_written = submit.clone();
+    let written = Input::new("dictionary-written", editor.written.clone())
+        .placeholder("表記")
+        .accessibility_label("表記")
+        .track_focus(&editor.written_focus)
+        .disabled(editor.saving)
+        .invalid(editor.error.is_some())
+        .on_change(cx.listener(|view, value: &gpui::SharedString, _, cx| {
+            view.dictionary.written = value.to_string();
+            view.dictionary.error = None;
+            cx.notify();
+        }))
+        .on_submit(move |value, window, cx| submit_written(value, window, cx));
+    let reading = Input::new("dictionary-reading", editor.reading.clone())
+        .placeholder("読み（任意）")
+        .accessibility_label("読み")
+        .disabled(editor.saving)
+        .invalid(editor.error.is_some())
+        .on_change(cx.listener(|view, value: &gpui::SharedString, _, cx| {
+            view.dictionary.reading = value.to_string();
+            view.dictionary.error = None;
+            cx.notify();
+        }))
+        .on_submit(move |value, window, cx| submit(value, window, cx));
+    (written, reading)
+}
+
 fn dictionary_form(
     editor: &DictionaryEditor,
-    theme: &G2VTheme,
+    window: &Window,
     cx: &Context<MozuApp>,
-) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .py_3()
+) -> impl IntoElement + use<> {
+    use mozu_ui::ui::{
+        dialog::dialog_footer,
+        field::{FieldLayout, field, field_group, field_label},
+    };
+    let (written, reading) = dictionary_inputs(editor, cx);
+    field_group(cx)
         .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, window, cx| {
             if event.keystroke.key == "escape" && !view.dictionary.saving {
                 view.dictionary.close(window, cx);
@@ -315,65 +322,45 @@ fn dictionary_form(
         .child(
             div()
                 .flex()
+                .flex_col()
                 .gap_3()
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child("表記"),
-                        )
-                        .child(
-                            Input::new(&editor.written)
-                                .size(InputSize::Small)
-                                .disabled(editor.saving)
-                                .invalid(editor.error.is_some())
-                                .accessibility_label("表記"),
-                        ),
+                    field(
+                        "new-word-written",
+                        written,
+                        FieldLayout::Vertical,
+                        window,
+                        cx,
+                    )
+                    .label(field_label(
+                        "表記",
+                        FieldLayout::Vertical,
+                        window,
+                        cx,
+                    )),
                 )
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child("読み"),
-                        )
-                        .child(
-                            Input::new(&editor.reading)
-                                .size(InputSize::Small)
-                                .disabled(editor.saving)
-                                .invalid(editor.error.is_some())
-                                .accessibility_label("読み"),
-                        ),
+                    field(
+                        "new-word-reading",
+                        reading,
+                        FieldLayout::Vertical,
+                        window,
+                        cx,
+                    )
+                    .label(field_label(
+                        "読み",
+                        FieldLayout::Vertical,
+                        window,
+                        cx,
+                    )),
                 ),
         )
-        .children(editor.error.as_ref().map(|error| {
-            div()
-                .text_xs()
-                .text_color(theme.destructive)
-                .child(error.clone())
-        }))
         .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap_2()
+            dialog_footer()
                 .child(
                     Button::new("cancel-word-edit")
                         .label("キャンセル")
-                        .size(ButtonSize::Small)
+                        .size(ButtonSize::Sm)
                         .variant(ButtonVariant::Ghost)
                         .disabled(editor.saving)
                         .on_click(
@@ -383,10 +370,8 @@ fn dictionary_form(
                 .child(
                     Button::new("save-word")
                         .label(if editor.saving { "確認中" } else { "保存" })
-                        .size(ButtonSize::Small)
-                        .disabled(
-                            editor.saving || editor.written.read(cx).value().trim().is_empty(),
-                        )
+                        .size(ButtonSize::Sm)
+                        .disabled(editor.saving || editor.written.trim().is_empty())
                         .on_click(
                             cx.listener(|view, _, window, cx| save_dictionary(view, window, cx)),
                         ),
@@ -396,11 +381,17 @@ fn dictionary_form(
 
 pub(crate) fn render_dictionary(
     view: &MozuApp,
-    theme: &G2VTheme,
+    window: &Window,
     cx: &Context<MozuApp>,
-) -> impl IntoElement {
+) -> impl IntoElement + use<> {
+    use kinu_ui::{TableColumn, TableEmpty, TableRow};
+    use mozu_ui::ui::{
+        data_table::data_table,
+        field::{field_errors, field_group},
+        input_group::{InputField, InputGroup},
+    };
     let editor = &view.dictionary;
-    let query = editor.search.read(cx).value().trim().to_lowercase();
+    let query = editor.search.trim().to_lowercase();
     let entries = editor
         .entries
         .iter()
@@ -411,147 +402,174 @@ pub(crate) fn render_dictionary(
                     .reading
                     .as_ref()
                     .is_some_and(|reading| reading.to_lowercase().contains(&query))
-                || editor.form == DictionaryForm::Edit(entry.id)
         })
+        .cloned()
         .collect::<Vec<_>>();
-    let empty = entries.is_empty();
-    let rows = entries.into_iter().map(|entry| {
-        let id = entry.id;
-        let editing = editor.form == DictionaryForm::Edit(id);
-        div()
-            .border_b_1()
-            .border_color(theme.border.opacity(0.5))
-            .when(editing, |row| row.child(dictionary_form(editor, theme, cx)))
-            .when(!editing, |row| {
-                row.child(
+    let row_count = entries.len();
+    let saving = editor.saving;
+    let edit = std::rc::Rc::new(cx.listener(|view, id: &i64, window, cx| {
+        view.dictionary.open(DictionaryForm::Edit(*id), window, cx)
+    }));
+    let remove = std::rc::Rc::new(
+        cx.listener(|view, id: &i64, window, cx| view.dictionary.remove(*id, window, cx)),
+    );
+    let table = data_table(
+        "dictionary-table",
+        row_count,
+        move |index, _, _| {
+            let entry = &entries[index];
+            let id = entry.id;
+            let cells = {
+                let edit = edit.clone();
+                let remove = remove.clone();
+                vec![
+                    div()
+                        .truncate()
+                        .child(entry.written.clone())
+                        .into_any_element(),
+                    div()
+                        .truncate()
+                        .child(entry.reading.clone().unwrap_or_else(|| "—".into()))
+                        .into_any_element(),
                     div()
                         .flex()
                         .items_center()
-                        .gap_3()
-                        .min_h(px(42.0))
+                        .gap_1()
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(entry.written.clone()),
+                            Button::new(("edit-word", id as u64))
+                                .icon_start(Icon::new(IconName::PencilEdit, rems(1.0)))
+                                .size(ButtonSize::IconSm)
+                                .variant(ButtonVariant::Ghost)
+                                .accessibility_label(format!("{}を編集", entry.written))
+                                .disabled(saving)
+                                .on_click(move |_, window, cx| edit(&id, window, cx)),
                         )
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_color(theme.muted_foreground)
-                                .child(entry.reading.clone().unwrap_or_else(|| "—".into())),
+                            Button::new(("delete-word", id as u64))
+                                .icon_start(Icon::new(IconName::Trash, rems(1.0)))
+                                .size(ButtonSize::IconSm)
+                                .variant(ButtonVariant::Ghost)
+                                .accessibility_label(format!("{}を削除", entry.written))
+                                .disabled(saving)
+                                .on_click(move |_, window, cx| remove(&id, window, cx)),
                         )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_none()
-                                .gap_1()
-                                .child(
-                                    Button::new(("edit-word", id as u64))
-                                        .icon(IconName::PencilEdit)
-                                        .size(ButtonSize::IconTiny)
-                                        .variant(ButtonVariant::Ghost)
-                                        .accessibility_label(format!("{}を編集", entry.written))
-                                        .disabled(editor.saving)
-                                        .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.dictionary.open(
-                                                DictionaryForm::Edit(id),
-                                                window,
-                                                cx,
-                                            )
-                                        })),
-                                )
-                                .child(
-                                    Button::new(("delete-word", id as u64))
-                                        .icon(IconName::Trash)
-                                        .size(ButtonSize::IconTiny)
-                                        .variant(ButtonVariant::Ghost)
-                                        .accessibility_label(format!("{}を削除", entry.written))
-                                        .disabled(editor.saving)
-                                        .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.dictionary.remove(id, window, cx)
-                                        })),
-                                ),
-                        ),
-                )
+                        .into_any_element(),
+                ]
+            };
+            TableRow::new(id as u64, cells)
+        },
+        window,
+        cx,
+    )
+    .columns([
+        TableColumn::new("written", "表記").flex(1.),
+        TableColumn::new("reading", "読み").flex(1.),
+        TableColumn::new("actions", "操作").width(px(88.)),
+    ])
+    .accessibility_label("辞書の単語一覧")
+    .scroll_fade(mozu_ui::ui::utils::scroll_fade::scroll_fade(
+        gpui::Axis::Vertical,
+    ))
+    .viewport_height((window.viewport_size().height - px(158.)).max(px(100.)))
+    .empty(TableEmpty::new(
+        Empty::new()
+            .title(if query.is_empty() {
+                "単語はまだありません"
+            } else {
+                "一致する単語がありません"
             })
-    });
-    div()
+            .media(
+                EmptyMediaVariant::Default,
+                div().child(Icon::new(IconName::Dictionary, rems(1.5))),
+            ),
+    ));
+    let search = InputGroup::new("dictionary-search-group").w_full().field(
+        InputField::new("dictionary-search", "辞書を検索", editor.search.clone())
+            .label_hidden(true)
+            .icon(mozu_ui::ui::icon::IconName::Search)
+            .placeholder("単語を検索")
+            .on_change(cx.listener(|view, value: &gpui::SharedString, _, cx| {
+                view.dictionary.search = value.to_string();
+                cx.notify();
+            })),
+    );
+    let errors = editor
+        .error
+        .as_ref()
+        .map(|error| error.clone().into())
+        .into_iter()
+        .collect::<Vec<gpui::SharedString>>();
+    field_group(cx)
         .id("dictionary")
         .flex_1()
         .min_h_0()
-        .flex()
-        .flex_col()
         .px_6()
-        .text_style(typography::TEXT_13)
-        .font_weight(FontWeight::NORMAL)
-        .child(
-            div().flex_none().pb_3().child(
-                Input::new(&editor.search)
-                    .size(InputSize::Small)
-                    .accessibility_label("辞書を検索"),
-            ),
-        )
-        .children((editor.form == DictionaryForm::New).then(|| {
-            div()
-                .flex_none()
-                .border_b_1()
-                .border_color(theme.border)
-                .child(dictionary_form(editor, theme, cx))
-        }))
+        .py_3()
+        .child(search)
         .children(
             (editor.form == DictionaryForm::Closed)
-                .then(|| {
-                    editor.error.as_ref().map(|error| {
-                        div()
-                            .text_xs()
-                            .py_2()
-                            .text_color(theme.destructive)
-                            .child(error.clone())
-                    })
-                })
+                .then(|| field_errors("dictionary-errors", &errors, window, cx))
                 .flatten(),
         )
-        .child(
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap_3()
-                .py_2()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(div().flex_1().child("表記"))
-                .child(div().flex_1().child("読み"))
-                .child(div().w(px(52.0))),
-        )
-        .child(
-            div()
-                .id("dictionary-list")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .children(rows)
-                .children(empty.then(|| {
-                    div()
-                        .py_6()
-                        .text_color(theme.muted_foreground)
-                        .child(if query.is_empty() {
-                            "単語はまだありません"
-                        } else {
-                            "一致する単語がありません"
-                        })
-                })),
-        )
+        .child(table)
 }
-#[derive(Clone, Copy)]
+
+pub(crate) fn dictionary_dialog(
+    view: &MozuApp,
+    window: &mut Window,
+    cx: &mut Context<MozuApp>,
+) -> impl IntoElement + use<> {
+    use mozu_ui::ui::{
+        dialog::{DialogStyle, dialog, dialog_header},
+        field::field_errors,
+    };
+    let editor = &view.dictionary;
+    let title = match editor.form {
+        DictionaryForm::Edit(_) => "単語を編集",
+        _ => "単語を登録",
+    };
+    let errors = editor
+        .error
+        .iter()
+        .cloned()
+        .map(gpui::SharedString::from)
+        .collect::<Vec<_>>();
+    let content = div()
+        .flex()
+        .flex_col()
+        .gap_0()
+        .child(dialog_header(title, "", window, cx))
+        .child(dictionary_form(editor, window, cx))
+        .children(field_errors(
+            "dictionary-dialog-errors",
+            &errors,
+            window,
+            cx,
+        ));
+    let close = cx.listener(|view, open: &bool, window, cx| {
+        if !*open && !view.dictionary.saving {
+            view.dictionary.close(window, cx);
+        }
+    });
+    dialog(
+        "dictionary-dialog",
+        editor.form != DictionaryForm::Closed,
+        content,
+        DialogStyle::current(cx),
+        window,
+        cx,
+    )
+    .title(title)
+    .on_open_change(move |open, _, window, cx| close(&open, window, cx))
+}
+
+#[derive(Clone)]
 pub(crate) struct Preferences {
     pub(crate) variant: HaasVariant,
     pub(crate) show_island: bool,
     pub(crate) anchor: Anchor,
+    pub(crate) ai_enabled: bool,
+    pub(crate) ai_prompt: String,
 }
 
 impl Preferences {
@@ -571,16 +589,30 @@ impl Preferences {
             variant,
             show_island,
             anchor,
+            ai_enabled: defaults.boolForKey(ns_string!("AIFormattingEnabled")),
+            ai_prompt: defaults
+                .stringForKey(ns_string!("AIFormattingPrompt"))
+                .map_or_else(
+                    || crate::format::DEFAULT_PROMPT.to_owned(),
+                    |value| value.to_string(),
+                ),
         }
     }
 
-    pub(crate) fn save(self) {
+    pub(crate) fn save(&self) {
         let defaults = NSUserDefaults::standardUserDefaults();
         let frames = match self.variant {
             HaasVariant::Frames1500 => 1500,
             HaasVariant::Frames3072 => 3072,
         };
         defaults.setInteger_forKey(frames, ns_string!("EncoderFrames"));
+        defaults.setBool_forKey(self.ai_enabled, ns_string!("AIFormattingEnabled"));
+        unsafe {
+            defaults.setObject_forKey(
+                Some(&NSString::from_str(&self.ai_prompt)),
+                ns_string!("AIFormattingPrompt"),
+            );
+        }
         defaults.setBool_forKey(self.show_island, ns_string!("ShowDictationIsland"));
         defaults.setInteger_forKey(self.anchor as isize, ns_string!("DictationIslandAnchor"));
     }
@@ -606,27 +638,40 @@ pub(crate) fn request_microphone_permission(cx: &mut Context<MozuApp>) {
     .detach();
 }
 
+fn setting_item(id: &'static str, title: &'static str) -> mozu_ui::ui::item::Item {
+    use mozu_ui::ui::{
+        item::{Item, ItemSize, ItemVariant},
+        utils::presentation::TextRole,
+    };
+    Item::new(id, title)
+        .size(ItemSize::Default)
+        .variant(ItemVariant::Muted)
+        .title_role(TextRole::Body)
+        .description_role(TextRole::Caption)
+}
+
 pub(crate) fn render(
     demo: &MozuApp,
     shortcut: Option<Button>,
-    theme: &G2VTheme,
-    cx: &Context<MozuApp>,
-) -> impl IntoElement {
-    let preferences = demo.preferences;
+    theme: &MozuTheme,
+    window: &mut Window,
+    cx: &mut Context<MozuApp>,
+) -> impl IntoElement + use<> {
+    let preferences = &demo.preferences;
     let active = demo.run.is_some();
     let microphone = match microphone_permission() {
         AVAudioApplicationRecordPermission::Granted => div().text_sm().child("許可済み"),
         AVAudioApplicationRecordPermission::Undetermined => div().child(
             Button::new("microphone-permission")
                 .label("マイクを許可する")
-                .size(ButtonSize::Small)
+                .size(ButtonSize::Sm)
                 .variant(ButtonVariant::Outline)
                 .on_click(cx.listener(|_, _, _, cx| request_microphone_permission(cx))),
         ),
         _ => div().child(
             Button::new("microphone-settings")
                 .label("システム設定を開く")
-                .size(ButtonSize::Small)
+                .size(ButtonSize::Sm)
                 .variant(ButtonVariant::Outline)
                 .on_click(cx.listener(|_, _, _, _| {
                     let url = NSURL::URLWithString(ns_string!(
@@ -639,96 +684,615 @@ pub(crate) fn render(
                 })),
         ),
     };
-    let encoders = [
-        ("15 秒", HaasVariant::Frames1500),
-        ("30.72 秒", HaasVariant::Frames3072),
-    ]
-    .into_iter()
-    .map(|(label, variant)| {
-        let installed = demo.models.encoder_is_installed(variant);
-        Button::new(label)
-            .label(label)
-            .size(ButtonSize::Small)
-            .rounded_full()
-            .variant(ButtonVariant::SurfaceOption)
-            .selected(installed && preferences.variant == variant)
-            .disabled(active || !installed || demo.models.is_busy())
-            .on_click(cx.listener(move |view, _, _, cx| {
-                if view.run.is_none()
-                    && !view.models.is_busy()
-                    && view.models.encoder_is_installed(variant)
-                    && view.preferences.variant != variant
-                {
-                    view.preferences.variant = variant;
+    let ai = render_chatgpt(demo, theme, window, cx);
+    use mozu_ui::ui::{
+        field::field_group,
+        toggle_group::{ToggleGroup, ToggleGroupItem},
+    };
+    let encoders = ToggleGroup::new(
+        "encoder-choice",
+        kinu_ui::Selection::Single(Some(preferences.variant)),
+    )
+    .accessibility_label("エンコーダー")
+    .disabled(active || demo.models.is_busy())
+    .item(
+        ToggleGroupItem::new("encoder-1500", HaasVariant::Frames1500)
+            .accessibility_label("15 秒")
+            .disabled(!demo.models.encoder_is_installed(HaasVariant::Frames1500))
+            .child("15 秒"),
+    )
+    .item(
+        ToggleGroupItem::new("encoder-3072", HaasVariant::Frames3072)
+            .accessibility_label("30.72 秒")
+            .disabled(!demo.models.encoder_is_installed(HaasVariant::Frames3072))
+            .child("30.72 秒"),
+    )
+    .on_change(cx.listener(|view, selection, _, cx| {
+        if let kinu_ui::Selection::Single(Some(variant)) = selection
+            && view.preferences.variant != *variant
+        {
+            view.preferences.variant = *variant;
+            view.preferences.save();
+            view.invalidate_recognition_models();
+            view.warm_recognition();
+            cx.notify();
+        }
+    }));
+    let island = setting_item("island-preference", "音声入力インジケータ")
+        .media(
+            mozu_ui::ui::item::ItemMediaVariant::Icon,
+            mozu_ui::ui::icon::Icon::new(mozu_ui::ui::icon::IconName::Indicator),
+        )
+        .actions(
+            Switch::new("show-dictation-island", preferences.show_island)
+                .accessibility_label("音声入力インジケータ")
+                .on_change(cx.listener(|view, checked: &bool, _, cx| {
+                    view.preferences.show_island = *checked;
                     view.preferences.save();
-                    view.invalidate_recognition_models();
-                    view.warm_recognition();
                     cx.notify();
-                }
-            }))
-    });
-
-    let set_island = cx.listener(|view, checked: &bool, _, cx| {
-        view.preferences.show_island = *checked;
-        view.preferences.save();
-        cx.notify();
-    });
-
-    div()
-        .id("settings")
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .px(px(28.0))
-        .py(px(14.0))
+                })),
+        );
+    let content = field_group(cx)
+        .max_w(px(520.))
+        .mx_auto()
         .child(
+            setting_item("encoder-setting", "エンコーダー")
+                .media(
+                    mozu_ui::ui::item::ItemMediaVariant::Icon,
+                    mozu_ui::ui::icon::Icon::new(mozu_ui::ui::icon::IconName::Encoder),
+                )
+                .actions(encoders),
+        )
+        .child(island)
+        .child(ai)
+        .child(
+            setting_item("microphone-setting", "マイクへのアクセス")
+                .media(
+                    mozu_ui::ui::item::ItemMediaVariant::Icon,
+                    mozu_ui::ui::icon::Icon::new(mozu_ui::ui::icon::IconName::Microphone),
+                )
+                .actions(microphone),
+        )
+        .child(
+            setting_item("shortcut-setting", "音声入力のショートカット")
+                .media(
+                    mozu_ui::ui::item::ItemMediaVariant::Icon,
+                    mozu_ui::ui::icon::Icon::new(mozu_ui::ui::icon::IconName::Shortcut),
+                )
+                .actions(
+                    div()
+                        .flex()
+                        .items_center()
+                        .children(shortcut)
+                        .children(demo.key_monitor.is_some().then_some("Fn")),
+                ),
+        );
+    let viewport = kinu_ui::ScrollAreaViewport::new()
+        .px_6()
+        .py_3()
+        .child(content);
+    mozu_ui::ui::scroll_area::scroll_area(
+        "settings-scroll",
+        mozu_ui::ui::scroll_area::scroll_fade(viewport, gpui::Axis::Vertical),
+        kinu_ui::ScrollAreaAxes::Vertical,
+        window,
+        cx,
+    )
+    .flex_1()
+    .min_h_0()
+}
+
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+pub(crate) struct ChatGptUi {
+    pub(crate) vault: Option<Vault>,
+    pub(crate) models: Vec<Model>,
+    pub(crate) model: String,
+    pub(crate) busy: bool,
+    pub(crate) error: Option<String>,
+    cancellation: Arc<AtomicBool>,
+    model_open: bool,
+    account_open: bool,
+    welcome: bool,
+}
+
+impl ChatGptUi {
+    pub(crate) fn new() -> Self {
+        Self {
+            vault: None,
+            models: Vec::new(),
+            model: String::new(),
+            busy: true,
+            error: None,
+            cancellation: Arc::new(AtomicBool::new(false)),
+            model_open: false,
+            account_open: false,
+            welcome: false,
+        }
+    }
+    pub(crate) fn connected(&self) -> bool {
+        self.vault.as_ref().is_some_and(chatgpt::is_connected)
+    }
+    pub(crate) fn ready(&self) -> bool {
+        self.connected() && !self.busy && self.models.iter().any(|m| m.slug == self.model)
+    }
+    pub(crate) fn cancel(&self) {
+        self.cancellation.store(true, Ordering::SeqCst);
+    }
+    fn load_model(&mut self) {
+        self.model = self
+            .vault
+            .as_ref()
+            .and_then(|v| v.active.as_ref())
+            .and_then(|id| {
+                NSUserDefaults::standardUserDefaults().stringForKey(
+                    &objc2_foundation::NSString::from_str(&format!("ChatGPTModel.{id}")),
+                )
+            })
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+    }
+    fn save_model(&self) {
+        if let Some(id) = self.vault.as_ref().and_then(|v| v.active.as_ref()) {
+            unsafe {
+                NSUserDefaults::standardUserDefaults().setObject_forKey(
+                    Some(&objc2_foundation::NSString::from_str(&self.model)),
+                    &objc2_foundation::NSString::from_str(&format!("ChatGPTModel.{id}")),
+                );
+            }
+        }
+    }
+}
+
+enum ChatGptOutcome {
+    Loaded(Vault),
+    SignedIn(Vault),
+    Models(Vault, Vec<Model>),
+    SignedOut(Vault, Option<String>),
+}
+enum ChatGptEvent {
+    Browser(String),
+    Done(chatgpt::Result<ChatGptOutcome>),
+}
+
+impl MozuApp {
+    fn chatgpt_task(
+        &mut self,
+        task: impl FnOnce(
+            Arc<AtomicBool>,
+            async_channel::Sender<ChatGptEvent>,
+        ) -> chatgpt::Result<ChatGptOutcome>
+        + Send
+        + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.chatgpt.busy = true;
+        self.chatgpt.error = None;
+        self.chatgpt.cancellation = Arc::new(AtomicBool::new(false));
+        let cancel = self.chatgpt.cancellation.clone();
+        let (tx, rx) = async_channel::unbounded();
+        let activity = crate::updater::protect(cx);
+        std::thread::spawn(move || {
+            let outcome = task(cancel, tx.clone());
+            let _ = tx.send_blocking(ChatGptEvent::Done(outcome));
+            drop(activity);
+        });
+        cx.spawn(async move |view, cx| {
+            while let Ok(event) = rx.recv().await {
+                let done = matches!(event, ChatGptEvent::Done(_));
+                let _ = view.update(cx, |view, cx| {
+                    match event {
+                        ChatGptEvent::Browser(url) => {
+                            if !view.chatgpt.cancellation.load(Ordering::SeqCst)
+                                && let Err(error) = open_url(&url)
+                            {
+                                view.chatgpt.cancel();
+                                view.chatgpt.error = Some(error);
+                            }
+                        }
+                        ChatGptEvent::Done(result) => {
+                            view.chatgpt.busy = false;
+                            match result {
+                                Ok(ChatGptOutcome::Loaded(vault)) => {
+                                    view.chatgpt.vault = Some(vault);
+                                    view.chatgpt.load_model();
+                                    if view.chatgpt.connected() {
+                                        view.refresh_chatgpt_models(cx);
+                                    }
+                                }
+                                Ok(ChatGptOutcome::SignedIn(vault)) => {
+                                    view.chatgpt.vault = Some(vault);
+                                    view.chatgpt.models.clear();
+                                    view.chatgpt.load_model();
+                                    if !NSUserDefaults::standardUserDefaults()
+                                        .boolForKey(ns_string!("ChatGPTWelcomeSeen"))
+                                    {
+                                        view.chatgpt.welcome = true;
+                                    }
+                                    view.refresh_chatgpt_models(cx);
+                                }
+                                Ok(ChatGptOutcome::Models(vault, models)) => {
+                                    view.chatgpt.vault = Some(vault);
+                                    view.chatgpt.models = models;
+                                    if !view
+                                        .chatgpt
+                                        .models
+                                        .iter()
+                                        .any(|m| m.slug == view.chatgpt.model)
+                                    {
+                                        view.chatgpt.model.clear();
+                                    }
+                                }
+                                Ok(ChatGptOutcome::SignedOut(vault, warning)) => {
+                                    view.chatgpt.vault = Some(vault);
+                                    view.chatgpt.models.clear();
+                                    view.chatgpt.error = warning;
+                                }
+                                Err(error) => {
+                                    if !view.chatgpt.cancellation.load(Ordering::SeqCst)
+                                        || view.chatgpt.error.is_none()
+                                    {
+                                        view.chatgpt.error = Some(error);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cx.notify();
+                });
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+    pub(crate) fn load_chatgpt(&mut self, cx: &mut Context<Self>) {
+        self.chatgpt_task(|_, _| Vault::load().map(ChatGptOutcome::Loaded), cx);
+    }
+    fn sign_in_chatgpt(&mut self, returning: Option<String>, cx: &mut Context<Self>) {
+        if self.chatgpt.busy || self.run.is_some() {
+            return;
+        }
+        let Some(_vault) = self.chatgpt.vault.clone() else {
+            self.load_chatgpt(cx);
+            return;
+        };
+        self.chatgpt_task(
+            move |cancel, tx| {
+                chatgpt::sign_in(&Vault::load()?, returning.as_deref(), &cancel, |url| {
+                    tx.send_blocking(ChatGptEvent::Browser(url))
+                        .map_err(|_| "Mozuの認証画面が閉じられました".into())
+                })
+                .map(ChatGptOutcome::SignedIn)
+            },
+            cx,
+        );
+    }
+    fn refresh_chatgpt_models(&mut self, cx: &mut Context<Self>) {
+        if self.chatgpt.busy || self.run.is_some() {
+            return;
+        }
+        let Some(_vault) = self.chatgpt.vault.clone() else {
+            return;
+        };
+        self.chatgpt_task(
+            move |_, _| {
+                chatgpt::list_models(&Vault::load()?).map(|(v, m)| ChatGptOutcome::Models(v, m))
+            },
+            cx,
+        );
+    }
+    fn sign_out_chatgpt(&mut self, cx: &mut Context<Self>) {
+        if self.chatgpt.busy || self.run.is_some() {
+            return;
+        }
+        let Some(_vault) = self.chatgpt.vault.clone() else {
+            return;
+        };
+        self.chatgpt_task(
+            move |_, _| {
+                chatgpt::sign_out(&Vault::load()?)
+                    .map(|(v, warning)| ChatGptOutcome::SignedOut(v, warning))
+            },
+            cx,
+        );
+    }
+}
+
+fn open_url(value: &str) -> std::result::Result<(), String> {
+    let url = NSURL::URLWithString(&objc2_foundation::NSString::from_str(value))
+        .ok_or("リンクのURLが不正です")?;
+    if NSWorkspace::sharedWorkspace().openURL(&url) {
+        Ok(())
+    } else {
+        Err("ブラウザを開けませんでした".into())
+    }
+}
+
+fn render_chatgpt(
+    view: &MozuApp,
+    _theme: &MozuTheme,
+    window: &mut Window,
+    cx: &mut Context<MozuApp>,
+) -> impl IntoElement + use<> {
+    use mozu_ui::ui::dropdown_menu::{DropdownStyle, dropdown_menu_with_trigger};
+    let state = &view.chatgpt;
+    let locked = state.busy || view.run.is_some();
+    let connected = state.connected();
+    let status = if state.busy {
+        "接続を確認中"
+    } else if connected {
+        "連携済み"
+    } else {
+        "未連携"
+    };
+    let account = state.vault.as_ref().and_then(|v| v.selected());
+    let account_name = account
+        .map(|a| a.email.clone())
+        .unwrap_or_else(|| "ChatGPT".into());
+    let returning = account.map(|a| a.client_id.clone());
+    let login = Button::new("chatgpt-login")
+        .label(if connected {
+            "再ログイン"
+        } else {
+            "Continue with ChatGPT"
+        })
+        .icon_start(mozu_ui::icons::BrandIcon::new(
+            mozu_ui::icons::BrandIconName::OpenAi,
+            rems(1.0),
+        ))
+        .accessibility_label("ChatGPTでログイン")
+        .size(ButtonSize::Sm)
+        .variant(ButtonVariant::Outline)
+        .disabled(locked)
+        .on_click(cx.listener(move |view, _, _, cx| view.sign_in_chatgpt(returning.clone(), cx)));
+    let model_label = state
+        .models
+        .iter()
+        .find(|m| m.slug == state.model)
+        .map(|m| m.display_name.as_str())
+        .unwrap_or("モデルを選択");
+    let trigger = Button::new("chatgpt-model-trigger")
+        .label(model_label.to_owned())
+        .icon_end(Icon::new(IconName::ChevronDown, rems(1.0)))
+        .variant(ButtonVariant::Outline)
+        .size(ButtonSize::Sm)
+        .disabled(locked || !connected || state.models.is_empty())
+        .into_primitive(window, cx);
+    let mut model_menu = dropdown_menu_with_trigger::<String>(
+        "chatgpt-model-menu",
+        state.model_open,
+        trigger,
+        DropdownStyle::current(cx),
+        window,
+        cx,
+    )
+    .on_open_change({
+        let set = cx.listener(|view, open: &bool, _, cx| {
+            view.chatgpt.model_open = *open;
+            cx.notify();
+        });
+        move |open, _, w, cx| set(&open, w, cx)
+    })
+    .on_invoke(cx.listener(|view, slug: &String, _, cx| {
+        view.chatgpt.model = slug.clone();
+        view.chatgpt.model_open = false;
+        view.chatgpt.save_model();
+        cx.notify();
+    }));
+    for model in &state.models {
+        model_menu = model_menu.item(kinu_ui::MenuItem::new(
+            model.slug.clone(),
+            model.slug.clone(),
+            model.display_name.clone(),
+        ));
+    }
+    let account_trigger = Button::new("chatgpt-account-trigger")
+        .label(account_name.clone())
+        .variant(ButtonVariant::Ghost)
+        .size(ButtonSize::Sm)
+        .disabled(locked || state.vault.is_none())
+        .into_primitive(window, cx);
+    let mut account_menu = dropdown_menu_with_trigger::<String>(
+        "chatgpt-account-menu",
+        state.account_open,
+        account_trigger,
+        DropdownStyle::current(cx),
+        window,
+        cx,
+    )
+    .on_open_change({
+        let set = cx.listener(|view, open: &bool, _, cx| {
+            view.chatgpt.account_open = *open;
+            cx.notify();
+        });
+        move |open, _, w, cx| set(&open, w, cx)
+    })
+    .on_invoke(cx.listener(|view, id: &String, _, cx| {
+        view.chatgpt.account_open = false;
+        if id == "add-account" {
+            view.sign_in_chatgpt(None, cx);
+        } else if view.chatgpt.vault.is_some() {
+            let id = id.clone();
+            view.chatgpt_task(
+                move |_, _| {
+                    let mut next = Vault::load()?;
+                    if !next.accounts.iter().any(|a| a.client_id == id) {
+                        return Err("ChatGPTアカウントが見つかりません".into());
+                    }
+                    next.active = Some(id);
+                    next.save()?;
+                    Ok(ChatGptOutcome::Loaded(next))
+                },
+                cx,
+            );
+        }
+        cx.notify();
+    }));
+    if let Some(vault) = &state.vault {
+        for (index, account) in vault.accounts.iter().enumerate() {
+            account_menu = account_menu.item(kinu_ui::MenuItem::new(
+                account.client_id.clone(),
+                account.client_id.clone(),
+                format!("{} · {}", account.email, index + 1),
+            ));
+        }
+    }
+    account_menu = account_menu.item(kinu_ui::MenuItem::new(
+        "add-account",
+        "add-account".to_owned(),
+        "別のアカウントでログイン",
+    ));
+    use mozu_ui::ui::{
+        field::field_errors,
+        item::{ItemGroup, ItemVariant},
+    };
+    let issues = state
+        .error
+        .as_ref()
+        .map(|error| error.clone().into())
+        .into_iter()
+        .collect::<Vec<gpui::SharedString>>();
+    let errors = field_errors("chatgpt-errors", &issues, window, cx);
+    let connection_actions = div()
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap_2()
+        .when(!state.busy, |actions| actions.child(login))
+        .when(state.busy, |actions| {
+            actions.child(
+                Button::new("chatgpt-cancel-login")
+                    .label("キャンセル")
+                    .size(ButtonSize::Compact)
+                    .variant(ButtonVariant::Ghost)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.chatgpt.cancel();
+                        cx.notify();
+                    })),
+            )
+        })
+        .when(connected && !state.busy, |actions| {
+            actions.child(
+                Button::new("chatgpt-sign-out")
+                    .label("ログアウト")
+                    .size(ButtonSize::Compact)
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(locked)
+                    .on_click(cx.listener(|view, _, _, cx| view.sign_out_chatgpt(cx))),
+            )
+        });
+    let connection = setting_item("chatgpt-connection", "ChatGPT連携")
+        .variant(ItemVariant::Outline)
+        .description(status)
+        .actions(connection_actions)
+        .when(connected, |item| item.footer(account_menu));
+    let model = setting_item("chatgpt-model-setting", "モデル")
+        .variant(ItemVariant::Outline)
+        .actions(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .child(model_menu)
+                .child(
+                    Button::new("chatgpt-refresh-models")
+                        .label("更新")
+                        .accessibility_label("モデルを更新")
+                        .size(ButtonSize::Compact)
+                        .variant(ButtonVariant::Ghost)
+                        .disabled(locked || !connected)
+                        .on_click(cx.listener(|view, _, _, cx| view.refresh_chatgpt_models(cx))),
+                ),
+        );
+    let prompt = setting_item("ai-formatting-prompt-setting", "プロンプト")
+        .variant(ItemVariant::Outline)
+        .footer(
+            mozu_ui::ui::textarea::Textarea::new(
+                "ai-formatting-prompt",
+                view.preferences.ai_prompt.clone(),
+            )
+            .accessibility_label("AI整形のプロンプト")
+            .w_full()
+            .disabled(view.run.is_some())
+            .invalid(view.preferences.ai_prompt.trim().is_empty())
+            .on_change(cx.listener(|view, text: &gpui::SharedString, _, cx| {
+                view.preferences.ai_prompt = text.to_string();
+                view.preferences.save();
+                cx.notify();
+            })),
+        );
+    let usage = setting_item("chatgpt-usage", "利用状況")
+        .variant(ItemVariant::Outline)
+        .actions(
+            Button::new("chatgpt-manage-usage")
+                .label("管理画面を開く")
+                .accessibility_label("ChatGPTの利用状況を管理")
+                .size(ButtonSize::Compact)
+                .variant(ButtonVariant::Outline)
+                .on_click(cx.listener(|view, _, _, cx| {
+                    if let Err(error) = open_url("https://chatgpt.com/settings/usage") {
+                        view.chatgpt.error = Some(error);
+                        cx.notify();
+                    }
+                })),
+        );
+    setting_item("ai-formatting-setting", "AI整形")
+        .media(
+            mozu_ui::ui::item::ItemMediaVariant::Icon,
+            mozu_ui::ui::icon::Icon::new(mozu_ui::ui::icon::IconName::OpenAI),
+        )
+        .description("OpenAIへ文字起こしを送り、ChatGPTプランで整形します。")
+        .actions(
+            Switch::new("ai-formatting-enabled", view.preferences.ai_enabled)
+                .accessibility_label("AI整形")
+                .disabled(view.run.is_some())
+                .on_change(cx.listener(|view, checked: &bool, _, cx| {
+                    view.preferences.ai_enabled = *checked;
+                    view.preferences.save();
+                    cx.notify();
+                })),
+        )
+        .footer(
             div()
                 .w_full()
-                .max_w(px(520.0))
-                .mx_auto()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
                 .child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .pb(px(12.0))
-                        .child("設定"),
+                    ItemGroup::new("chatgpt-settings")
+                        .item(connection)
+                        .item(model)
+                        .item(prompt)
+                        .item(usage),
                 )
-                .child(
-                    row("エンコーダー", theme.border)
-                        .child(segment_track(theme).children(encoders)),
-                )
-                .child(
-                    row("音声入力インジケータ", theme.border).child(
-                        Switch::new("show-dictation-island", "音声入力インジケータ")
-                            .checked(preferences.show_island)
-                            .on_change(move |checked, _, window, cx| {
-                                set_island(&checked, window, cx)
-                            }),
-                    ),
-                )
-                .child(row("マイクへのアクセス", theme.border).child(microphone))
-                .child(
-                    row("音声入力のショートカット", theme.border).child(
-                        div()
-                            .text_sm()
-                            .children(shortcut)
-                            .children(demo.key_monitor.is_some().then_some("Fn")),
-                    ),
-                ),
+                .children(errors),
         )
 }
 
-fn row(label: &'static str, border: Hsla) -> gpui::Div {
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap_3()
-        .py(px(12.0))
-        .border_t_1()
-        .border_color(border)
-        .child(div().text_sm().child(label))
+pub(crate) fn chatgpt_welcome(
+    view: &MozuApp,
+    window: &Window,
+    cx: &Context<MozuApp>,
+) -> impl IntoElement + use<> {
+    use mozu_ui::ui::dialog::{dialog_footer, dialog_header, dialog_shell};
+    let close = cx.listener(|view, _, _, cx| {
+        view.chatgpt.welcome = false;
+        NSUserDefaults::standardUserDefaults()
+            .setBool_forKey(true, ns_string!("ChatGPTWelcomeSeen"));
+        cx.notify();
+    });
+    dialog_shell("chatgpt-welcome", view.chatgpt.welcome, window, cx)
+        .content(div().flex().flex_col().p_6().rounded_lg()
+            .bg(mozu_ui::theme::Theme::current(window, cx).popover)
+            .child(dialog_header("ChatGPTプランを利用します", "AI整形はChatGPTプランの利用枠を使用します。利用状況と上限はChatGPTの設定で管理できます。", window, cx))
+            .child(dialog_footer().child(Button::new("chatgpt-welcome-dismiss").label("わかりました").on_click(close))))
+        .on_open_change({ let close = cx.listener(|view, _, _, cx| {
+            view.chatgpt.welcome = false;
+            NSUserDefaults::standardUserDefaults().setBool_forKey(true, ns_string!("ChatGPTWelcomeSeen"));
+            cx.notify();
+        }); move |_, _, window, cx| close(&(), window, cx) })
 }

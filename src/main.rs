@@ -1,4 +1,6 @@
+mod chatgpt;
 mod dictation;
+mod format;
 mod history;
 mod island;
 mod material;
@@ -12,24 +14,18 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
     },
     thread,
     time::{Duration, Instant},
 };
 
-use g2v_ui::{
-    theme::{self, colors::G2VTheme, typography},
-    ui::{
-        Assets, Button, ButtonSize, ButtonVariant, DropdownMenu, DropdownMenuRadioItem, Empty,
-        EmptyMediaVariant, Icon, IconName, PopoverAlign, SidebarMenuButton,
-    },
-};
 use gpui::{
-    App, AppContext as _, Bounds, ClipboardItem, Context, FontWeight, InteractiveElement as _,
-    IntoElement as _, ParentElement as _, PathPromptOptions, Render, ScrollHandle,
-    StatefulInteractiveElement as _, Styled, TitlebarOptions, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions, div, point, prelude::FluentBuilder as _, px, rems, size,
+    App, AppContext as _, Bounds, ClipboardItem, Context, FontWeight, IntoElement as _,
+    ParentElement as _, PathPromptOptions, Render, ScrollHandle, Styled, TitlebarOptions, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, div, point,
+    prelude::FluentBuilder as _, px, rems, size,
 };
 use mozu_audio::{
     Cancellation, ComputeConfig, Error, HaasEngine, Result,
@@ -41,6 +37,11 @@ use mozu_audio::{
     vad::SileroVad,
     vocabulary::{Vocabulary, VocabularyConfig},
     window::AsrConfig,
+};
+use mozu_ui::{
+    appearance::MozuTheme,
+    theme,
+    ui::{Assets, Button, ButtonSize, ButtonVariant, Empty, EmptyMediaVariant, Icon, IconName},
 };
 
 use objc2_avf_audio::AVAudioApplicationRecordPermission;
@@ -90,10 +91,12 @@ struct MozuApp {
     other_screen: Screen,
     material: WindowMaterial,
     preferences: Preferences,
+    chatgpt: settings::ChatGptUi,
     page: Page,
     dictionary: DictionaryEditor,
     models: models::ModelManager,
     recording_source: RecordingSource,
+    recording_source_open: bool,
     recognition_jobs: Sender<RecognitionJob>,
     warmup: Cancellation,
     run: Option<Run>,
@@ -130,6 +133,7 @@ struct Run {
     cancellation: Cancellation,
     discard: bool,
     model_ready: bool,
+    ai_cancel: Arc<AtomicBool>,
     _update_activity: updater::Activity,
 }
 
@@ -147,6 +151,7 @@ enum Phase {
     Listening,
     Transcribing(BatchProgress),
     Stopping,
+    Formatting,
     Finished,
     Failed(String),
 }
@@ -168,10 +173,12 @@ impl MozuApp {
             other_screen: Screen::default(),
             material: WindowMaterial::install(window),
             preferences: Preferences::load(),
+            chatgpt: settings::ChatGptUi::new(),
             page: Page::Recognition(Mode::Dictation),
-            dictionary: DictionaryEditor::new(window, cx),
+            dictionary: DictionaryEditor::new(cx),
             models: models::ModelManager::load(),
             recording_source: RecordingSource::Microphone,
+            recording_source_open: false,
             recognition_jobs,
             warmup: Cancellation::new(),
             run: None,
@@ -184,8 +191,10 @@ impl MozuApp {
 impl Drop for MozuApp {
     fn drop(&mut self) {
         if let Some(run) = &self.run {
+            run.ai_cancel.store(true, Ordering::SeqCst);
             run.cancellation.cancel();
         }
+        self.chatgpt.cancel();
         self.models.cancel();
         self.warmup.cancel();
     }
@@ -257,6 +266,7 @@ enum Update {
         progress: BatchProgress,
         text: String,
     },
+    Formatting(String),
     Finished {
         text: String,
         history_id: Result<Option<i64>>,
@@ -367,6 +377,25 @@ impl MozuApp {
         if self.run.is_some() || self.models.is_busy() {
             return;
         }
+        if self.preferences.ai_enabled
+            && !matches!(input, Input::Sample(_))
+            && !self.chatgpt.ready()
+        {
+            self.page = Page::Settings;
+            self.chatgpt.error =
+                Some("AI整形を利用するには、ChatGPTへログインしてモデルを選択してください".into());
+            cx.notify();
+            return;
+        }
+        if self.preferences.ai_enabled
+            && !matches!(input, Input::Sample(_))
+            && self.preferences.ai_prompt.trim().is_empty()
+        {
+            self.page = Page::Settings;
+            self.chatgpt.error = Some("AI整形のプロンプトを入力してください".into());
+            cx.notify();
+            return;
+        }
         match &input {
             Input::Dictation => self.select_mode(Mode::Dictation),
             Input::File(_) | Input::Sample(_) | Input::Recording(_) => {
@@ -411,14 +440,31 @@ impl MozuApp {
         let (stop, requests) = mpsc::channel();
         let (updates, receiver) = mpsc::channel();
         let cancellation = Cancellation::new();
+        let ai_cancel = Arc::new(AtomicBool::new(false));
         self.run = Some(Run {
             input: input.clone(),
             stop,
             cancellation: cancellation.clone(),
             discard: false,
             model_ready: false,
+            ai_cancel: ai_cancel.clone(),
             _update_activity: updater::protect(cx),
         });
+        let ai = if self.preferences.ai_enabled && !matches!(input, Input::Sample(_)) {
+            Some(AiRequest {
+                model: self.chatgpt.model.clone(),
+                prompt: self.preferences.ai_prompt.clone(),
+                client_id: self
+                    .chatgpt
+                    .vault
+                    .as_ref()
+                    .and_then(|v| v.active.clone())
+                    .expect("AI readiness checked"),
+                cancelled: ai_cancel,
+            })
+        } else {
+            None
+        };
         let variant = self.preferences.variant;
         let cache_path = self.models.root.clone();
         let jobs = self.recognition_jobs.clone();
@@ -434,9 +480,12 @@ impl MozuApp {
             if jobs
                 .send(Box::new(move |loaded| {
                     let result = recognize(
-                        cache_path,
-                        input,
-                        variant,
+                        RecognitionRequest {
+                            cache_path,
+                            input,
+                            variant,
+                            ai,
+                        },
                         feed,
                         &updates,
                         &cancellation,
@@ -495,6 +544,10 @@ impl MozuApp {
                                         progress.processed_samples as f64 / SAMPLE_RATE as f64;
                                     view.screen.phase = Phase::Transcribing(progress);
                                 }
+                            }
+                            Ok(Update::Formatting(text)) => {
+                                view.screen.transcript.finish(text);
+                                view.screen.phase = Phase::Formatting;
                             }
                             Ok(Update::Finished { text, history_id }) => {
                                 if view.run.as_ref().is_some_and(|run| run.discard) {
@@ -573,7 +626,7 @@ impl MozuApp {
                             let activity = updater::protect(cx);
                             cx.spawn(async move |_, cx| {
                                 cx.background_executor()
-                                    .timer(Duration::from_millis(350))
+                                    .timer(Duration::from_millis(500))
                                     .await;
                                 clipboard.restore();
                                 drop(activity);
@@ -613,7 +666,7 @@ impl MozuApp {
     fn stop(&mut self, cx: &mut Context<Self>) {
         if matches!(
             self.screen.phase,
-            Phase::Preparing | Phase::Transcribing(_) | Phase::Stopping
+            Phase::Preparing | Phase::Transcribing(_) | Phase::Stopping | Phase::Formatting
         ) {
             self.cancel(cx);
         } else {
@@ -638,6 +691,7 @@ impl MozuApp {
     fn cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(run) = &mut self.run {
             run.discard = true;
+            run.ai_cancel.store(true, Ordering::SeqCst);
             run.cancellation.cancel();
             self.request_finish(cx);
         }
@@ -831,15 +885,26 @@ fn report_recognition_failure(error: Error, updates: &Sender<Update>) {
     let _ = updates.send(update);
 }
 
-fn recognize(
+struct RecognitionRequest {
     cache_path: Option<PathBuf>,
     input: Input,
     variant: HaasVariant,
+    ai: Option<AiRequest>,
+}
+
+fn recognize(
+    request: RecognitionRequest,
     feed: Feed,
     updates: &Sender<Update>,
     cancellation: &Cancellation,
     loaded: &mut Option<LoadedModels>,
 ) -> Result<()> {
+    let RecognitionRequest {
+        cache_path,
+        input,
+        variant,
+        ai,
+    } = request;
     let cache_path =
         cache_path.ok_or_else(|| Error::Invalid("Cannot locate the Mozu model cache".into()))?;
     let models = LoadedModels::get(loaded, cache_path, variant, cancellation)?;
@@ -909,10 +974,7 @@ fn recognize(
                     )
                 })
                 .map(Some);
-            let _ = updates.send(Update::Finished {
-                text: recognition.result.text,
-                history_id,
-            });
+            publish_result(recognition.result.text, history_id, ai.as_ref(), updates)?;
             return Ok(());
         }
         feed => feed,
@@ -963,10 +1025,56 @@ fn recognize(
             })
             .map(Some)
     };
-    let _ = updates.send(Update::Finished {
-        text: result.text,
-        history_id,
-    });
+    publish_result(result.text, history_id, ai.as_ref(), updates)?;
+    Ok(())
+}
+
+struct AiRequest {
+    model: String,
+    prompt: String,
+    client_id: String,
+    cancelled: Arc<AtomicBool>,
+}
+
+fn publish_result(
+    raw: String,
+    history_id: Result<Option<i64>>,
+    ai: Option<&AiRequest>,
+    updates: &Sender<Update>,
+) -> Result<()> {
+    let id = history_id?;
+    let text = match ai {
+        Some(ai) => {
+            updates
+                .send(Update::Formatting(raw.clone()))
+                .map_err(|_| Error::Cancelled)?;
+            let vault = chatgpt::Vault::load().map_err(Error::Invalid)?;
+            if vault.active.as_deref() != Some(ai.client_id.as_str()) {
+                return Err(Error::Invalid(
+                    "AI整形のアカウントが変更されました。録音をやり直してください".into(),
+                ));
+            }
+            let result = format::clean(&vault, &ai.model, &ai.prompt, &raw, &ai.cancelled);
+            if ai.cancelled.load(Ordering::SeqCst) {
+                if let Some(id) = id {
+                    History::open()?.discard(id)?;
+                }
+                return Err(Error::Cancelled);
+            }
+            let (_, text) = result.map_err(Error::Invalid)?;
+            if let Some(id) = id {
+                History::open()?.save_formatted(id, &text, &ai.model)?;
+            }
+            text
+        }
+        None => raw,
+    };
+    updates
+        .send(Update::Finished {
+            text,
+            history_id: Ok(id),
+        })
+        .map_err(|_| Error::Cancelled)?;
     Ok(())
 }
 
@@ -1120,7 +1228,8 @@ fn publish_audio(
 
 impl Render for MozuApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let theme = G2VTheme::global(cx).clone();
+        let dictionary_dialog = settings::dictionary_dialog(self, window, cx);
+        let theme = MozuTheme::global(cx).clone();
         let material = self.material.tint(&theme);
         let chrome_border = theme.border.opacity(0.72);
         let active = self.run.is_some();
@@ -1164,15 +1273,67 @@ impl Render for MozuApp {
                     "音声入力中"
                 }))
         });
-        let nav_item = |label, page, icon| {
-            SidebarMenuButton::new(label, label)
-                .icon(icon, rems(1.0))
-                .active(self.page == page)
-                .collapsed(compact)
-                .on_click(std::rc::Rc::new(cx.listener(move |view, _, _, cx| {
-                    view.navigate(page, cx);
-                })))
+        let sidebar_style = mozu_ui::ui::sidebar::SidebarStyle::current(
+            mozu_ui::ui::sidebar::SidebarVariant::Sidebar,
+            cx,
+        );
+        let nav_item = |label: &'static str, page, icon| {
+            kinu_ui::SidebarMenuItem::new(label, label)
+                .icon_with(mozu_ui::ui::sidebar::sidebar_menu_icon(
+                    icon,
+                    sidebar_style.clone(),
+                ))
+                .selected(self.page == page)
+                .navigation_link()
+                .on_click(cx.listener(move |view, _, _, cx| view.navigate(page, cx)))
         };
+        let navigation = mozu_ui::ui::sidebar::sidebar_menu(
+            "main-navigation",
+            sidebar_style.clone(),
+            window,
+            cx,
+        )
+        .display(if compact {
+            kinu_ui::SidebarMenuDisplay::Icons
+        } else {
+            kinu_ui::SidebarMenuDisplay::Full
+        })
+        .item(nav_item(
+            Mode::Dictation.title(),
+            Page::Recognition(Mode::Dictation),
+            mozu_ui::ui::icon::IconName::VoiceInput,
+        ))
+        .item(nav_item(
+            Mode::Transcription.title(),
+            Page::Recognition(Mode::Transcription),
+            mozu_ui::ui::icon::IconName::Transcription,
+        ))
+        .item(nav_item(
+            "辞書",
+            Page::Dictionary,
+            mozu_ui::ui::icon::IconName::Dictionary,
+        ));
+        let settings_navigation = mozu_ui::ui::sidebar::sidebar_menu(
+            "settings-navigation",
+            sidebar_style.clone(),
+            window,
+            cx,
+        )
+        .display(if compact {
+            kinu_ui::SidebarMenuDisplay::Icons
+        } else {
+            kinu_ui::SidebarMenuDisplay::Full
+        })
+        .item(nav_item(
+            "モデル",
+            Page::Models,
+            mozu_ui::ui::icon::IconName::Model,
+        ))
+        .item(nav_item(
+            "設定",
+            Page::Settings,
+            mozu_ui::ui::icon::IconName::Setting,
+        ));
         let sidebar = div()
             .w(px(if compact { 58.0 } else { 172.0 }))
             .bg(material::sidebar_tint(material, &theme))
@@ -1186,60 +1347,67 @@ impl Render for MozuApp {
             .px_2()
             .border_r_1()
             .border_color(theme.sidebar_divider)
-            .child(nav_item(
-                Mode::Dictation.title(),
-                Page::Recognition(Mode::Dictation),
-                IconName::Microphone,
-            ))
-            .child(nav_item(
-                Mode::Transcription.title(),
-                Page::Recognition(Mode::Transcription),
-                IconName::Files,
-            ))
-            .child(nav_item("辞書", Page::Dictionary, IconName::Plan))
+            .child(navigation)
             .child(div().flex_1())
             .children(dictation_badge)
-            .child(nav_item("モデル", Page::Models, IconName::Components))
-            .child(nav_item("設定", Page::Settings, IconName::Setting));
+            .child(settings_navigation);
         let unavailable = active || self.models.is_busy();
         let open_button = show_start_actions.then(|| {
             Button::new("open-file")
-                .icon(IconName::FolderOpen)
+                .size(ButtonSize::Compact)
+                .icon_start(Icon::new(IconName::OpenFile, rems(0.875)))
                 .label("ファイルを開く")
                 .disabled(unavailable)
                 .on_click(cx.listener(|view, _, window, cx| view.open_file(window, cx)))
         });
         let source_picker = show_start_actions.then(|| {
-            let view = cx.entity().downgrade();
-            let choice = |source: RecordingSource| {
-                let view = view.clone();
-                DropdownMenuRadioItem::new(
-                    source.label(),
-                    source.label(),
-                    self.recording_source == source,
-                )
-                .on_select(move |_, cx| {
-                    let _ = view.update(cx, |view, cx| {
-                        view.recording_source = source;
-                        cx.notify();
-                    });
-                })
+            use mozu_ui::ui::{
+                select::{SelectStyle, select},
+                utils::presentation::ControlSize,
             };
-            DropdownMenu::new(
+            let mut style = SelectStyle::current(cx);
+            style.tokens.size = ControlSize::Compact;
+            let open = cx.listener(|view, open: &bool, _, cx| {
+                view.recording_source_open = *open;
+                cx.notify();
+            });
+            let change = cx.listener(
+                |view, selection: &kinu_ui::Selection<RecordingSource>, _, cx| {
+                    if let kinu_ui::Selection::Single(Some(source)) = selection {
+                        view.recording_source = *source;
+                        view.recording_source_open = false;
+                        cx.notify();
+                    }
+                },
+            );
+            select(
                 "recording-source",
-                Button::new("recording-source-button")
-                    .label(self.recording_source.label())
-                    .icon(IconName::ChevronDown)
-                    .variant(ButtonVariant::Outline)
-                    .disabled(unavailable),
+                kinu_ui::Selection::Single(Some(self.recording_source)),
+                self.recording_source_open,
+                style,
+                window,
+                cx,
             )
-            .align(PopoverAlign::End)
-            .radio_item(choice(RecordingSource::Microphone))
-            .radio_item(choice(RecordingSource::Meeting))
+            .trigger_style(gpui::StyleRefinement::default().min_w_0())
+            .accessibility_label("録音元")
+            .disabled(unavailable)
+            .item(kinu_ui::SelectItem::new(
+                "microphone",
+                RecordingSource::Microphone,
+                RecordingSource::Microphone.label(),
+            ))
+            .item(kinu_ui::SelectItem::new(
+                "meeting",
+                RecordingSource::Meeting,
+                RecordingSource::Meeting.label(),
+            ))
+            .on_open_change(move |value, _, window, cx| open(&value, window, cx))
+            .on_value_change(move |selection, _, window, cx| change(selection, window, cx))
         });
         let record = show_start_actions.then(|| {
             Button::new("record")
-                .icon(IconName::Microphone)
+                .size(ButtonSize::Compact)
+                .icon_start(Icon::new(IconName::RecordAudio, rems(0.875)))
                 .label("録音")
                 .disabled(unavailable)
                 .variant(ButtonVariant::Outline)
@@ -1248,31 +1416,38 @@ impl Render for MozuApp {
                 }))
         });
         let stop = match screen.phase {
-            Phase::Preparing | Phase::Transcribing(_) | Phase::Stopping => Button::new("cancel")
-                .label("キャンセル")
-                .variant(ButtonVariant::Outline)
-                .disabled(self.run.as_ref().is_some_and(|run| run.discard))
-                .on_click(cx.listener(|view, _, _, cx| view.stop(cx))),
+            Phase::Preparing | Phase::Transcribing(_) | Phase::Stopping | Phase::Formatting => {
+                Button::new("cancel")
+                    .size(ButtonSize::Compact)
+                    .label("キャンセル")
+                    .variant(ButtonVariant::Outline)
+                    .disabled(self.run.as_ref().is_some_and(|run| run.discard))
+                    .on_click(cx.listener(|view, _, _, cx| view.stop(cx)))
+            }
             _ => Button::new("stop")
-                .icon(IconName::Stop)
+                .size(ButtonSize::Compact)
+                .icon_start(Icon::new(IconName::Stop, rems(0.875)))
                 .label("停止")
                 .variant(ButtonVariant::Destructive)
                 .on_click(cx.listener(|view, _, _, cx| view.stop(cx))),
         };
         let copy = can_copy.then(|| {
             Button::new("copy-transcript")
-                .icon(if screen.copied {
-                    IconName::Check
-                } else {
-                    IconName::Copy
-                })
+                .icon_start(Icon::new(
+                    if screen.copied {
+                        IconName::Check
+                    } else {
+                        IconName::Copy
+                    },
+                    rems(1.0),
+                ))
                 .label(if screen.copied {
                     "コピー済み"
                 } else {
                     "コピー"
                 })
-                .size(ButtonSize::Small)
-                .variant(ButtonVariant::GhostSecondary)
+                .size(ButtonSize::Sm)
+                .variant(ButtonVariant::Ghost)
                 .on_click(cx.listener(|view, _, _, cx| {
                     let screen = view.screen_for_mut(Mode::Transcription);
                     cx.write_to_clipboard(ClipboardItem::new_string(
@@ -1286,7 +1461,7 @@ impl Render for MozuApp {
             let shortcut = self.key_monitor.is_none().then(|| {
                 Button::new("dictation-shortcut")
                     .label("Fnキーを有効にする")
-                    .size(ButtonSize::Small)
+                    .size(ButtonSize::Sm)
                     .variant(ButtonVariant::Outline)
                     .on_click(cx.listener(|view, _, window, cx| {
                         dictation::request_accessibility_permission();
@@ -1294,24 +1469,42 @@ impl Render for MozuApp {
                         cx.notify();
                     }))
             });
-            settings::render(self, shortcut, &theme, cx)
+            settings::render(self, shortcut, &theme, window, cx)
         });
         let dictionary =
-            (self.page == Page::Dictionary).then(|| settings::render_dictionary(self, &theme, cx));
+            (self.page == Page::Dictionary).then(|| settings::render_dictionary(self, window, cx));
         let history = show_history.then(|| {
-            if dictation && screen.history.is_empty() {
-                let empty = Empty::new("音声入力の履歴はありません").media(
-                    EmptyMediaVariant::Default,
-                    Icon::new(IconName::Microphone, rems(1.5)).color(theme.muted_foreground),
-                );
-                if self.key_monitor.is_some() {
+            if screen.history.is_empty() {
+                let empty = Empty::new()
+                    .title(if dictation {
+                        "音声入力の履歴はありません"
+                    } else {
+                        "文字起こしの履歴はありません"
+                    })
+                    .media(
+                        EmptyMediaVariant::Default,
+                        div().child(
+                            Icon::new(
+                                if dictation {
+                                    IconName::VoiceInput
+                                } else {
+                                    IconName::Transcription
+                                },
+                                rems(1.5),
+                            )
+                            .color(theme.muted_foreground),
+                        ),
+                    );
+                if !dictation {
+                    empty.into_any_element()
+                } else if self.key_monitor.is_some() {
                     empty.description("Fnキーを押して話す").into_any_element()
                 } else {
                     empty
                         .content(
                             Button::new("open-voice-input-settings")
                                 .label("Fnキーの設定を開く")
-                                .size(ButtonSize::Small)
+                                .size(ButtonSize::Sm)
                                 .variant(ButtonVariant::Ghost)
                                 .on_click(
                                     cx.listener(|view, _, _, cx| view.navigate(Page::Settings, cx)),
@@ -1320,33 +1513,42 @@ impl Render for MozuApp {
                         .into_any_element()
                 }
             } else {
-                screen.history.render(mode, &theme, cx).into_any_element()
+                screen
+                    .history
+                    .render(mode, &theme, window, cx)
+                    .into_any_element()
             }
         });
         let back_to_list = (!transcribing && !show_history).then(|| {
             Button::new("back-to-recognition-list")
-                .icon(IconName::ArrowLeft)
+                .icon_start(Icon::new(IconName::ArrowLeft, rems(1.0)))
                 .label("一覧に戻る")
-                .size(ButtonSize::Small)
+                .size(ButtonSize::Sm)
                 .variant(ButtonVariant::Ghost)
                 .on_click(cx.listener(|view, _, _, cx| {
                     view.screen_for_mut(Mode::Transcription).clear_result();
                     cx.notify();
                 }))
         });
-        let models = (self.page == Page::Models).then(|| self.models.render(active, &theme, cx));
+        let models =
+            (self.page == Page::Models).then(|| self.models.render(active, &theme, window, cx));
         let transcript = (!show_history).then(|| {
-            div()
-                .id("transcript")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .track_scroll(&screen.scroll)
+            let viewport = kinu_ui::ScrollAreaViewport::new()
                 .px(px(8.0))
                 .py(px(20.0))
                 .text_size(px(18.0))
                 .line_height(px(32.0))
-                .child(screen.transcript.text.clone())
+                .child(screen.transcript.text.clone());
+            mozu_ui::ui::scroll_area::scroll_area(
+                "transcript",
+                mozu_ui::ui::scroll_area::scroll_fade(viewport, gpui::Axis::Vertical),
+                kinu_ui::ScrollAreaAxes::Vertical,
+                window,
+                cx,
+            )
+            .track_scroll(&screen.scroll)
+            .flex_1()
+            .min_h_0()
         });
         let preview = (!dictation && matches!(screen.phase, Phase::Listening)).then(|| {
             div()
@@ -1404,6 +1606,7 @@ impl Render for MozuApp {
                     theme.blue_500,
                 ),
                 Phase::Transcribing(_) => ("文字起こし中".into(), theme.blue_500),
+                Phase::Formatting => ("AI整形中".into(), theme.blue_500),
                 Phase::Stopping
                     if self
                         .run
@@ -1434,6 +1637,8 @@ impl Render for MozuApp {
         let recognition_title = page_mode.map(Mode::title);
         let page_title = match self.page {
             Page::Dictionary => Some("辞書"),
+            Page::Settings => Some("設定"),
+            Page::Models => Some("モデル"),
             _ => recognition_title,
         };
         let dictionary_add =
@@ -1476,8 +1681,13 @@ impl Render for MozuApp {
                 .children(transcript)
                 .children(preview)
         });
+        let welcome = settings::chatgpt_welcome(self, window, cx);
+        let tokens = mozu_ui::ui::utils::presentation::ComponentTheme::current(cx);
+        let title_metrics =
+            mozu_ui::ui::utils::presentation::TextRole::Body.metrics(tokens.size, &tokens);
         div()
             .size_full()
+            .font_family(theme::Theme::current(window, cx).font_sans)
             .text_color(theme.foreground)
             .flex()
             .child(sidebar)
@@ -1504,8 +1714,10 @@ impl Render for MozuApp {
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(px(title_metrics.size))
+                                    .line_height(px(title_metrics.line_height))
+                                    .font_weight(tokens.typography.semibold.weight)
+                                    .font_variations(tokens.typography.semibold.variations())
                                     .child(title),
                             )
                             .child(
@@ -1527,17 +1739,9 @@ impl Render for MozuApp {
                     .children(models)
                     .children(recognition),
             )
+            .child(welcome)
+            .child(dictionary_dialog)
     }
-}
-
-fn segment_track(theme: &G2VTheme) -> gpui::Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(2.0))
-        .p(px(2.0))
-        .rounded_full()
-        .bg(theme.control_track_fill())
 }
 
 fn main() {
@@ -1559,10 +1763,7 @@ fn main() {
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
-            gpui_base::init(cx);
-            typography::register_fonts(cx);
-            typography::install(cx);
-            theme::install(cx.window_appearance(), cx);
+            theme::install(cx).expect("install Mozu Kinu theme");
             updater::install(cx);
             let bounds = Bounds::centered(None, size(px(760.0), px(540.0)), cx);
             let console = cx
@@ -1584,6 +1785,7 @@ fn main() {
                     |window, cx| {
                         cx.new(|cx| {
                             let mut demo = MozuApp::new(window, cx);
+                            demo.load_chatgpt(cx);
                             demo.install_key_monitor(window, cx);
                             cx.observe_window_activation(window, |view, window, cx| {
                                 view.material.sync(window);
@@ -1592,7 +1794,6 @@ fn main() {
                             })
                             .detach();
                             cx.observe_window_appearance(window, |view, window, cx| {
-                                theme::install(window.appearance(), cx);
                                 view.material.sync(window);
                                 cx.notify();
                             })
@@ -1639,7 +1840,7 @@ mod tests {
 
     #[test]
     fn dark_control_fills_keep_their_contrast_over_window_material() {
-        let theme = G2VTheme::for_appearance(gpui::WindowAppearance::Dark);
+        let theme = MozuTheme::for_appearance(gpui::WindowAppearance::Dark);
         let track = theme.control_track_fill();
         let hover = theme.control_hover_fill();
         let selected = theme.control_selected_fill();
