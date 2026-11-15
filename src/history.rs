@@ -5,12 +5,12 @@ use std::{
     time::Duration,
 };
 
-use g2v_ui::{
-    theme::colors::G2VTheme,
-    ui::{Button, ButtonSize, ButtonVariant, IconName},
-};
-use gpui::{ClipboardItem, Context, IntoElement, div, prelude::*, px};
+use gpui::{ClipboardItem, Context, IntoElement, Window, div, prelude::*, px, rems};
 use mozu_audio::{Error, Result, models::HaasVariant, vocabulary::VocabularyTerm};
+use mozu_ui::{
+    appearance::MozuTheme,
+    ui::{Button, ButtonSize, ButtonVariant, Empty, Icon, IconName},
+};
 use rusqlite::{Connection, params};
 
 use crate::{Mode, MozuApp};
@@ -85,7 +85,8 @@ impl HistoryView {
     pub(crate) fn render(
         &self,
         mode: Mode,
-        theme: &G2VTheme,
+        theme: &MozuTheme,
+        window: &Window,
         cx: &Context<MozuApp>,
     ) -> impl IntoElement {
         let mut panel = div()
@@ -109,9 +110,9 @@ impl HistoryView {
                         .gap_2()
                         .child(
                             Button::new("back-to-history")
-                                .icon(IconName::ArrowLeft)
+                                .icon_start(Icon::new(IconName::ArrowLeft, rems(1.0)))
                                 .label("戻る")
-                                .size(ButtonSize::Small)
+                                .size(ButtonSize::Sm)
                                 .variant(ButtonVariant::Ghost)
                                 .on_click(cx.listener(move |view, _, _, cx| {
                                     view.screen_for_mut(mode).history.close_detail();
@@ -120,9 +121,9 @@ impl HistoryView {
                         )
                         .child(
                             Button::new(("copy-history", *id as u64))
-                                .icon(IconName::Copy)
+                                .icon_start(Icon::new(IconName::Copy, rems(1.0)))
                                 .label("コピー")
-                                .size(ButtonSize::Small)
+                                .size(ButtonSize::Sm)
                                 .variant(ButtonVariant::Outline)
                                 .on_click(move |_, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(
@@ -133,12 +134,7 @@ impl HistoryView {
                 )
                 .child(div().text_sm().line_height(px(24.0)).child(text.clone()));
         } else if self.entries.is_empty() && self.error.is_none() {
-            panel = panel.child(
-                div()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .child("履歴はありません"),
-            );
+            panel = panel.child(Empty::new().title("履歴はありません"));
         } else {
             panel = panel.children(self.entries.iter().map(|entry| {
                 let id = entry.id;
@@ -154,8 +150,8 @@ impl HistoryView {
                         div().flex_1().min_w_0().overflow_hidden().child(
                             Button::new(("history-entry", id as u64))
                                 .label(label.clone())
-                                .full_width()
-                                .content_alignment(g2v_ui::ui::ButtonContentAlignment::Start)
+                                .w_full()
+                                .justify_start()
                                 .variant(ButtonVariant::Ghost)
                                 .on_click(cx.listener(move |view, _, _, cx| {
                                     view.screen_for_mut(mode).history.open_entry(id);
@@ -172,18 +168,23 @@ impl HistoryView {
                     )
             }));
         }
-        div()
-            .id("history")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
+        let viewport = kinu_ui::ScrollAreaViewport::new()
             .px_2()
             .py_3()
-            .child(panel)
+            .child(panel);
+        mozu_ui::ui::scroll_area::scroll_area(
+            "history-scroll",
+            mozu_ui::ui::scroll_area::scroll_fade(viewport, gpui::Axis::Vertical),
+            kinu_ui::ScrollAreaAxes::Vertical,
+            window,
+            cx,
+        )
+        .flex_1()
+        .min_h_0()
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DictionaryEntry {
     pub(crate) id: i64,
     pub(crate) written: String,
@@ -241,7 +242,7 @@ impl History {
         let version: i64 = transaction
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(database_error)?;
-        if !(0..=3).contains(&version) {
+        if !(0..=4).contains(&version) {
             return Err(Error::Invalid(format!(
                 "Unsupported dictation history version: {version}"
             )));
@@ -281,6 +282,15 @@ impl History {
                 )
                 .map_err(database_error)?;
         }
+        if version < 4 {
+            transaction
+                .execute_batch(
+                    "ALTER TABLE dictations ADD COLUMN formatted_text TEXT;
+                ALTER TABLE dictations ADD COLUMN format_model TEXT;
+                PRAGMA user_version = 4;",
+                )
+                .map_err(database_error)?;
+        }
         transaction.commit().map_err(database_error)?;
         Ok(Self(connection))
     }
@@ -313,7 +323,7 @@ impl History {
 
     pub(crate) fn entries(&self, kind: HistoryKind) -> Result<Vec<HistoryEntry>> {
         let mut statement = self.0.prepare(
-            "SELECT id, substr(raw_text, 1, 120), source_name, datetime(created_at, 'localtime')
+            "SELECT id, substr(COALESCE(formatted_text, raw_text), 1, 120), source_name, datetime(created_at, 'localtime')
              FROM dictations WHERE kind = ?1 ORDER BY id DESC",
         ).map_err(database_error)?;
         statement
@@ -333,11 +343,27 @@ impl History {
     pub(crate) fn text(&self, id: i64) -> Result<String> {
         self.0
             .query_row(
-                "SELECT raw_text FROM dictations WHERE id = ?1",
+                "SELECT COALESCE(formatted_text, raw_text) FROM dictations WHERE id = ?1",
                 [id],
                 |row| row.get(0),
             )
             .map_err(database_error)
+    }
+
+    pub(crate) fn save_formatted(&self, id: i64, text: &str, model: &str) -> Result<()> {
+        let changed = self
+            .0
+            .execute(
+                "UPDATE dictations SET formatted_text = ?1, format_model = ?2 WHERE id = ?3",
+                params![text, model, id],
+            )
+            .map_err(database_error)?;
+        if changed != 1 {
+            return Err(Error::Invalid(format!(
+                "AI整形の保存対象がありません: dictation_id={id}"
+            )));
+        }
+        Ok(())
     }
 
     pub fn record_paste(&self, id: i64, sent: bool) -> Result<()> {
@@ -487,6 +513,46 @@ mod tests {
     }
 
     #[test]
+    fn formatting_migration_preserves_original_and_records_model() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.sqlite3");
+        let history = History::open_file(&path).unwrap();
+        let id = history
+            .save(
+                "えっと明日です",
+                16000,
+                HaasVariant::Frames3072,
+                HistoryKind::Dictation,
+                None,
+                false,
+            )
+            .unwrap();
+        history
+            .0
+            .execute_batch(
+                "ALTER TABLE dictations DROP COLUMN formatted_text;
+            ALTER TABLE dictations DROP COLUMN format_model; PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        drop(history);
+        let history = History::open_file(&path).unwrap();
+        assert_eq!(history.text(id).unwrap(), "えっと明日です");
+        history
+            .save_formatted(id, "明日です。", "chosen-model")
+            .unwrap();
+        assert_eq!(history.text(id).unwrap(), "明日です。");
+        let original: (String, String) = history
+            .0
+            .query_row(
+                "SELECT raw_text, format_model FROM dictations WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(original, ("えっと明日です".into(), "chosen-model".into()));
+    }
+
+    #[test]
     fn dictionary_migration_keeps_existing_history() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("history.sqlite3");
@@ -507,6 +573,8 @@ mod tests {
                 "DROP TABLE dictionary; DROP INDEX dictations_by_kind;
                  ALTER TABLE dictations DROP COLUMN kind;
                  ALTER TABLE dictations DROP COLUMN source_name;
+                 ALTER TABLE dictations DROP COLUMN formatted_text;
+                 ALTER TABLE dictations DROP COLUMN format_model;
                  PRAGMA user_version = 1;",
             )
             .unwrap();
@@ -532,7 +600,7 @@ mod tests {
         let text: String = history
             .0
             .query_row(
-                "SELECT raw_text FROM dictations WHERE id = ?1",
+                "SELECT COALESCE(formatted_text, raw_text) FROM dictations WHERE id = ?1",
                 [id],
                 |row| row.get(0),
             )
