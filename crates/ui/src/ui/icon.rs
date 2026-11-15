@@ -4,6 +4,14 @@ use kinu_ui::IconSize;
 
 #[derive(Clone, Copy)]
 pub enum IconName {
+    Encoder,
+    Indicator,
+    Shortcut,
+    OpenFile,
+    Model,
+    RecordAudio,
+    OpenAI,
+
     VoiceInput,
     Transcription,
     Dictionary,
@@ -151,6 +159,13 @@ impl IconName {
 
     fn bytes(self) -> &'static [u8] {
         match self {
+            Self::Encoder => include_bytes!("../../assets/icons/encoder.svg"),
+            Self::Indicator => include_bytes!("../../assets/icons/indicator.svg"),
+            Self::Shortcut => include_bytes!("../../assets/icons/shortcut.svg"),
+            Self::OpenFile => include_bytes!("../../assets/icons/open-file.svg"),
+            Self::Model => include_bytes!("../../assets/icons/model.svg"),
+            Self::RecordAudio => include_bytes!("../../assets/icons/record-audio.svg"),
+            Self::OpenAI => include_bytes!("../../assets/icons/openai.svg"),
             Self::VoiceInput => include_bytes!("../../assets/icons/voice-input.svg"),
             Self::Transcription => include_bytes!("../../assets/icons/transcription.svg"),
             Self::Dictionary => include_bytes!("../../assets/icons/dictionary.svg"),

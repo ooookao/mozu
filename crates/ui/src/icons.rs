@@ -52,6 +52,13 @@ macro_rules! icon_assets {
 }
 
 icon_assets![
+    (Encoder, "encoder"),
+    (Indicator, "indicator"),
+    (Shortcut, "shortcut"),
+    (OpenFile, "open-file"),
+    (Model, "model"),
+    (RecordAudio, "record-audio"),
+    (OpenAI, "openai"),
     (VoiceInput, "voice-input"),
     (Transcription, "transcription"),
     (Dictionary, "dictionary"),
