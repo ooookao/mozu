@@ -5,6 +5,7 @@ Mozu is a macOS app for voice typing and transcription on Apple Silicon. Transcr
 - **Voice typing** — Use Fn to dictate into the focused app. Mozu keeps a copy in its history.
 - **Transcription** — Open an audio file or record a microphone. Select **マイク＋システム音声** to also capture audio playing on the Mac. Live transcription appears as you record, and completed results are saved to history.
 - **Dictionary** — Add names and terms with optional readings to help Mozu recognize them.
+- **AI formatting** — Optionally connect ChatGPT in **設定**, choose a model, and enable AI formatting. Transcribed text is sent directly to OpenAI and uses your ChatGPT plan. Audio recognition stays on device.
 
 Download an encoder in **モデル** before starting. Grant microphone and system audio access when prompted, and enable Accessibility access to use Fn for voice typing. System audio capture requires macOS 14.2 or later.
 
