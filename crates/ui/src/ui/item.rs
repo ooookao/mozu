@@ -189,6 +189,8 @@ pub struct Item {
     url: Option<SharedString>,
     style: StyleRefinement,
     content_style: StyleRefinement,
+    title_role: Option<TextRole>,
+    description_role: Option<TextRole>,
 }
 impl Item {
     pub fn new(id: impl Into<ElementId>, title: impl Into<SharedString>) -> Self {
@@ -206,7 +208,19 @@ impl Item {
             url: None,
             style: StyleRefinement::default(),
             content_style: StyleRefinement::default(),
+            title_role: None,
+            description_role: None,
         }
+    }
+    /// Overrides title typography while retaining the item size and spacing.
+    pub fn title_role(mut self, role: TextRole) -> Self {
+        self.title_role = Some(role);
+        self
+    }
+    /// Overrides description typography independently of the item spacing.
+    pub fn description_role(mut self, role: TextRole) -> Self {
+        self.description_role = Some(role);
+        self
     }
     pub fn variant(mut self, variant: ItemVariant) -> Self {
         self.variant = variant;
@@ -293,7 +307,7 @@ impl RenderOnce for Item {
             .media
             .as_ref()
             .map_or(ItemMediaVariant::Default, |media| media.0);
-        let p = presentation(
+        let mut p = presentation(
             self.variant,
             self.size,
             media_kind,
@@ -305,6 +319,21 @@ impl RenderOnce for Item {
             window,
             cx,
         );
+        let tokens = ComponentTheme::current(cx);
+        if let Some(role) = self.title_role {
+            let metrics = role.metrics(tokens.size, &tokens);
+            p.title = p
+                .title
+                .text_size(px(metrics.size))
+                .line_height(px(metrics.line_height));
+        }
+        if let Some(role) = self.description_role {
+            let metrics = role.metrics(tokens.size, &tokens);
+            p.description = p
+                .description
+                .text_size(px(metrics.size))
+                .line_height(px(metrics.line_height));
+        }
         let mut contents = Vec::new();
         if let Some(header) = self.header {
             contents.push(part(&p.header).child(header).into_any_element());
