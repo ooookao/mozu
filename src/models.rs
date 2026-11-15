@@ -3,14 +3,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use g2v_ui::{
-    theme::colors::G2VTheme,
-    ui::{BrandIcon, BrandIconName, Button, ButtonSize, ButtonVariant, IconName},
-};
-use gpui::{Context, FontWeight, IntoElement, Window, div, prelude::*, px, rems};
+use gpui::{Context, IntoElement, Window, div, prelude::*, px, rems};
 use mozu_audio::{
     Cancellation, Error, Result,
     models::{HaasVariant, ModelCache},
+};
+use mozu_ui::{
+    appearance::MozuTheme,
+    ui::{BrandIcon, BrandIconName, Button, ButtonSize, ButtonVariant, Icon, IconName},
 };
 use objc2_foundation::{NSUserDefaults, ns_string};
 
@@ -247,9 +247,11 @@ impl ModelManager {
     pub(crate) fn render(
         &self,
         active: bool,
-        theme: &G2VTheme,
+        theme: &MozuTheme,
+        window: &Window,
         cx: &Context<MozuApp>,
     ) -> impl IntoElement {
+        use mozu_ui::ui::item::{Item, ItemGroup, ItemSize};
         let busy = active || self.is_busy();
         let folder = self.root.as_ref().filter(|root| root.is_dir()).cloned();
         let path = self
@@ -281,14 +283,16 @@ impl ModelManager {
             let confirm_delete = self.confirm_delete == Some(model);
             let action = if job.is_some_and(|job| job.action == ModelAction::Download) {
                 Button::new(("cancel-download", model as usize))
-                    .icon(IconName::X)
+                    .icon_start(Icon::new(IconName::X, rems(1.0)))
                     .accessibility_label(format!("{name}のダウンロードをキャンセル"))
+                    .accessibility_label("ダウンロードをキャンセル")
                     .tooltip("ダウンロードをキャンセル")
                     .on_click(cx.listener(|demo, _, _, _| demo.models.cancel()))
             } else if installed && !confirm_delete {
                 Button::new(("ask-remove-model", model as usize))
-                    .icon(IconName::Trash)
+                    .icon_start(Icon::new(IconName::Trash, rems(1.0)))
                     .accessibility_label(format!("{name}を削除"))
+                    .accessibility_label("削除")
                     .tooltip("削除")
                     .disabled(busy)
                     .on_click(cx.listener(move |demo, _, _, cx| {
@@ -302,8 +306,9 @@ impl ModelManager {
                     (IconName::ArrowDown, "ダウンロード")
                 };
                 Button::new(("operate-model", model as usize))
-                    .icon(icon)
+                    .icon_start(Icon::new(icon, rems(1.0)))
                     .accessibility_label(format!("{name}の{label}"))
+                    .accessibility_label(label)
                     .tooltip(label)
                     .disabled(busy || self.root.is_none())
                     .on_click(cx.listener(move |demo, _, window, cx| {
@@ -315,100 +320,86 @@ impl ModelManager {
                         Self::operate(demo, model, action, window, cx);
                     }))
             }
-            .size(ButtonSize::IconSmall)
+            .size(ButtonSize::IconSm)
             .variant(if confirm_delete {
                 ButtonVariant::Destructive
             } else {
                 ButtonVariant::Outline
             });
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .py_3()
-                .border_t_1()
-                .border_color(theme.border)
-                .child(
+            Item::new(("model-row", model as usize), name)
+                .size(ItemSize::Xs)
+                .description(format!("Core ML · {detail} · {status}"))
+                .actions(
                     div()
-                        .flex_1()
-                        .min_w_0()
                         .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(div().text_sm().child(name))
+                        .items_center()
+                        .gap_2()
                         .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(format!("Core ML · {detail} · {status}")),
-                        ),
+                            Button::new(("model-hugging-face", model as usize))
+                                .size(ButtonSize::IconSm)
+                                .variant(ButtonVariant::Ghost)
+                                .icon_end(BrandIcon::new(BrandIconName::HuggingFace, rems(1.125)))
+                                .accessibility_label(format!("{name}をHugging Faceで開く"))
+                                .accessibility_label("Hugging Faceで開く")
+                                .tooltip("Hugging Faceで開く")
+                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                        )
+                        .children(confirm_delete.then(|| {
+                            Button::new(("keep-model", model as usize))
+                                .label("キャンセル")
+                                .size(ButtonSize::Sm)
+                                .variant(ButtonVariant::Ghost)
+                                .on_click(cx.listener(|demo, _, _, cx| {
+                                    demo.models.confirm_delete = None;
+                                    cx.notify();
+                                }))
+                        }))
+                        .child(action),
+                )
+        });
+        let viewport = kinu_ui::ScrollAreaViewport::new().px_6().py_3().child(
+            div()
+                .max_w(px(520.0))
+                .mx_auto()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    Item::new("model-storage", "保存先")
+                        .size(ItemSize::Xs)
+                        .description(path)
+                        .actions(div().children(folder.map(|path| {
+                            div().flex().child(
+                                Button::new("reveal-model-folder")
+                                    .label("Finderで表示")
+                                    .icon_start(Icon::new(IconName::FolderOpen, rems(1.0)))
+                                    .size(ButtonSize::Sm)
+                                    .variant(ButtonVariant::Ghost)
+                                    .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                            )
+                        }))),
+                )
+                .children(
+                    self.error
+                        .clone()
+                        .map(|error| div().text_sm().text_color(theme.destructive).child(error)),
                 )
                 .child(
-                    Button::new(("model-hugging-face", model as usize))
-                        .size(ButtonSize::IconSmall)
-                        .variant(ButtonVariant::Ghost)
-                        .trailing_child(BrandIcon::new(BrandIconName::HuggingFace, rems(1.125)))
-                        .accessibility_label(format!("{name}をHugging Faceで開く"))
-                        .tooltip("Hugging Faceで開く")
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                )
-                .children(confirm_delete.then(|| {
-                    Button::new(("keep-model", model as usize))
-                        .label("キャンセル")
-                        .size(ButtonSize::Small)
-                        .variant(ButtonVariant::Ghost)
-                        .on_click(cx.listener(|demo, _, _, cx| {
-                            demo.models.confirm_delete = None;
-                            cx.notify();
-                        }))
-                }))
-                .child(action)
-        });
-        div()
-            .id("models")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .px_6()
-            .py_3()
-            .child(
-                div()
-                    .max_w(px(520.0))
-                    .mx_auto()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("モデル"),
-                    )
-                    .child(div().text_sm().child("保存先"))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(path),
-                    )
-                    .children(folder.map(|path| {
-                        div().flex().child(
-                            Button::new("reveal-model-folder")
-                                .label("Finderで表示")
-                                .icon(IconName::FolderOpen)
-                                .size(ButtonSize::Small)
-                                .variant(ButtonVariant::Ghost)
-                                .on_click(move |_, _, cx| cx.reveal_path(&path)),
-                        )
-                    }))
-                    .children(
-                        self.error.clone().map(|error| {
-                            div().text_sm().text_color(theme.destructive).child(error)
+                    rows.enumerate()
+                        .fold(ItemGroup::new("model-list"), |group, (index, row)| {
+                            group.separator(("model-divider", index)).item(row)
                         }),
-                    )
-                    .child(div().flex().flex_col().children(rows)),
-            )
+                ),
+        );
+        mozu_ui::ui::scroll_area::scroll_area(
+            "models-scroll",
+            mozu_ui::ui::scroll_area::scroll_fade(viewport, gpui::Axis::Vertical),
+            kinu_ui::ScrollAreaAxes::Vertical,
+            window,
+            cx,
+        )
+        .flex_1()
+        .min_h_0()
     }
 }
 
