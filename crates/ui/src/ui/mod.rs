@@ -9,6 +9,7 @@ pub mod menu;
 pub mod scroll_area;
 pub mod select;
 pub mod sidebar;
+pub mod spinner;
 pub mod switch;
 pub mod tooltip;
 pub mod utils;
