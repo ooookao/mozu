@@ -28,3 +28,5 @@ pub mod toggle;
 pub mod toggle_group;
 
 pub mod textarea;
+
+pub mod pagination;
