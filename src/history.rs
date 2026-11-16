@@ -11,7 +11,7 @@ use mozu_ui::{
     appearance::MozuTheme,
     ui::{Button, ButtonSize, ButtonVariant, Empty, Icon, IconName},
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, named_params, params};
 
 use crate::{Mode, MozuApp};
 
@@ -32,6 +32,9 @@ impl HistoryKind {
     }
 }
 
+const HISTORY_PAGE_SIZE: usize = 50;
+
+#[derive(Clone)]
 pub(crate) struct HistoryEntry {
     pub(crate) id: i64,
     pub(crate) preview: String,
@@ -39,11 +42,19 @@ pub(crate) struct HistoryEntry {
     pub(crate) created_at: String,
 }
 
+struct HistoryPage {
+    entries: Vec<HistoryEntry>,
+    has_more: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct HistoryView {
     entries: Vec<HistoryEntry>,
     detail: Option<(i64, String)>,
     error: Option<String>,
+    has_more: bool,
+    page_cursors: Vec<Option<i64>>,
+    scroll: gpui::UniformListScrollHandle,
 }
 
 impl HistoryView {
@@ -60,15 +71,50 @@ impl HistoryView {
     }
 
     pub(crate) fn refresh(&mut self, kind: HistoryKind) {
-        match History::open().and_then(|history| history.entries(kind)) {
-            Ok(entries) => {
-                self.entries = entries;
-                self.error = None;
+        match History::open().and_then(|history| history.entries_page(kind, None)) {
+            Ok(page) => {
+                self.apply_page(page);
+                self.page_cursors = vec![None];
             }
-            Err(error) => {
-                self.entries.clear();
-                self.error = Some(error.to_string());
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn apply_page(&mut self, page: HistoryPage) {
+        self.entries = page.entries;
+        self.has_more = page.has_more;
+        self.error = None;
+        self.scroll
+            .scroll_to_item_strict(0, gpui::ScrollStrategy::Top);
+    }
+
+    fn next_page(&mut self, kind: HistoryKind) {
+        if !self.has_more {
+            return;
+        }
+        let Some(cursor) = self.entries.last().map(|entry| entry.id) else {
+            return;
+        };
+        match History::open().and_then(|history| history.entries_page(kind, Some(cursor))) {
+            Ok(page) => {
+                self.apply_page(page);
+                self.page_cursors.push(Some(cursor));
             }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn previous_page(&mut self, kind: HistoryKind) {
+        if self.page_cursors.len() < 2 {
+            return;
+        }
+        let cursor = self.page_cursors[self.page_cursors.len() - 2];
+        match History::open().and_then(|history| history.entries_page(kind, cursor)) {
+            Ok(page) => {
+                self.apply_page(page);
+                self.page_cursors.pop();
+            }
+            Err(error) => self.error = Some(error.to_string()),
         }
     }
 
@@ -88,7 +134,10 @@ impl HistoryView {
         theme: &MozuTheme,
         window: &Window,
         cx: &Context<MozuApp>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
+        if self.detail.is_none() && !self.entries.is_empty() {
+            return self.render_page(mode, window, cx);
+        }
         let mut panel = div()
             .flex()
             .flex_col()
@@ -135,38 +184,6 @@ impl HistoryView {
                 .child(div().text_sm().line_height(px(24.0)).child(text.clone()));
         } else if self.entries.is_empty() && self.error.is_none() {
             panel = panel.child(Empty::new().title("履歴はありません"));
-        } else {
-            panel = panel.children(self.entries.iter().map(|entry| {
-                let id = entry.id;
-                let label = entry.source_name.as_ref().unwrap_or(&entry.preview);
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .py_2()
-                    .child(
-                        div().flex_1().min_w_0().overflow_hidden().child(
-                            Button::new(("history-entry", id as u64))
-                                .label(label.clone())
-                                .w_full()
-                                .justify_start()
-                                .variant(ButtonVariant::Ghost)
-                                .on_click(cx.listener(move |view, _, _, cx| {
-                                    view.screen_for_mut(mode).history.open_entry(id);
-                                    cx.notify();
-                                })),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(entry.created_at.clone()),
-                    )
-            }));
         }
         let viewport = kinu_ui::ScrollAreaViewport::new()
             .px_2()
@@ -181,6 +198,127 @@ impl HistoryView {
         )
         .flex_1()
         .min_h_0()
+        .into_any_element()
+    }
+
+    fn render_page(&self, mode: Mode, window: &Window, cx: &Context<MozuApp>) -> gpui::AnyElement {
+        use kinu_ui::{TableColumn, TableRow};
+        use mozu_ui::ui::{
+            data_table::data_table,
+            pagination::Pagination,
+            utils::presentation::{ComponentTheme, ControlSize, TextRole},
+        };
+        let entries = self.entries.clone();
+        let open = std::rc::Rc::new(cx.listener(move |view, id: &i64, _, cx| {
+            view.screen_for_mut(mode).history.open_entry(*id);
+            cx.notify();
+        }));
+        let tokens = ComponentTheme::current(cx);
+        let text = TextRole::Body.metrics(tokens.size, &tokens);
+        let header_height = text.line_height
+            + if tokens.size == ControlSize::Compact {
+                11.
+            } else {
+                17.
+            };
+        let pager_height = ControlSize::Compact.metrics(&tokens).control_height;
+        let error_height = if self.error.is_some() {
+            text.line_height + 12.
+        } else {
+            0.
+        };
+        let table = data_table(
+            "history-table",
+            entries.len(),
+            move |index, _, _| {
+                let entry = &entries[index];
+                let id = entry.id;
+                let open = open.clone();
+                TableRow::new(
+                    id as u64,
+                    vec![
+                        Button::new(("history-entry", id as u64))
+                            .label(entry.source_name.as_ref().unwrap_or(&entry.preview).clone())
+                            .size(ButtonSize::Compact)
+                            .variant(ButtonVariant::Ghost)
+                            .w_full()
+                            .h_full()
+                            .justify_start()
+                            .px_0()
+                            .on_click(move |_, window, cx| open(&id, window, cx))
+                            .into_any_element(),
+                        div().child(entry.created_at.clone()).into_any_element(),
+                    ],
+                )
+            },
+            window,
+            cx,
+        )
+        .columns([
+            TableColumn::new("content", "内容").flex(1.),
+            TableColumn::new("created", "日時").width(px(150.)),
+        ])
+        .track_scroll(&self.scroll)
+        .accessibility_label("音声入力・文字起こしの履歴")
+        .scroll_fade(mozu_ui::ui::utils::scroll_fade::scroll_fade(
+            gpui::Axis::Vertical,
+        ))
+        .viewport_height(
+            (window.viewport_size().height
+                - px(crate::TITLEBAR_HEIGHT
+                    + 24.
+                    + 12.
+                    + header_height
+                    + pager_height
+                    + error_height))
+            .max(px(40.)),
+        );
+        let pager = Pagination::new("history-pagination")
+            .accessibility_label("履歴のページ移動")
+            .item(
+                Button::new("history-previous")
+                    .label("前へ")
+                    .size(ButtonSize::Compact)
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(self.page_cursors.len() < 2)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.screen_for_mut(mode)
+                            .history
+                            .previous_page(mode.history_kind());
+                        cx.notify();
+                    })),
+            )
+            .item(div().child(format!("{}ページ", self.page_cursors.len().max(1))))
+            .item(
+                Button::new("history-next")
+                    .label("次へ")
+                    .size(ButtonSize::Compact)
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(!self.has_more)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.screen_for_mut(mode)
+                            .history
+                            .next_page(mode.history_kind());
+                        cx.notify();
+                    })),
+            );
+        div()
+            .id("history-page")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .px_6()
+            .py_3()
+            .gap_3()
+            .children(self.error.as_ref().map(|error| {
+                div()
+                    .text_color(mozu_ui::appearance::MozuTheme::global(cx).destructive)
+                    .child(error.clone())
+            }))
+            .child(table)
+            .child(pager)
+            .into_any_element()
     }
 }
 
@@ -321,23 +459,32 @@ impl History {
             .map_err(database_error)
     }
 
-    pub(crate) fn entries(&self, kind: HistoryKind) -> Result<Vec<HistoryEntry>> {
-        let mut statement = self.0.prepare(
-            "SELECT id, substr(COALESCE(formatted_text, raw_text), 1, 120), source_name, datetime(created_at, 'localtime')
-             FROM dictations WHERE kind = ?1 ORDER BY id DESC",
-        ).map_err(database_error)?;
-        statement
-            .query_map([kind.key()], |row| {
-                Ok(HistoryEntry {
-                    id: row.get(0)?,
-                    preview: row.get(1)?,
-                    source_name: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
+    fn entries_page(&self, kind: HistoryKind, before: Option<i64>) -> Result<HistoryPage> {
+        let sql = history_page_query(before);
+        let mut statement = self.0.prepare(&sql).map_err(database_error)?;
+        let read = |row: &rusqlite::Row<'_>| {
+            Ok(HistoryEntry {
+                id: row.get(0)?,
+                preview: row.get(1)?,
+                source_name: row.get(2)?,
+                created_at: row.get(3)?,
             })
-            .map_err(database_error)?
+        };
+        let limit = (HISTORY_PAGE_SIZE + 1) as i64;
+        let rows = match before {
+            Some(cursor) => statement.query_map(
+                named_params! {":kind": kind.key(), ":before": cursor, ":limit": limit},
+                read,
+            ),
+            None => statement.query_map(named_params! {":kind": kind.key(), ":limit": limit}, read),
+        }
+        .map_err(database_error)?;
+        let mut entries = rows
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(database_error)
+            .map_err(database_error)?;
+        let has_more = entries.len() > HISTORY_PAGE_SIZE;
+        entries.truncate(HISTORY_PAGE_SIZE);
+        Ok(HistoryPage { entries, has_more })
     }
 
     pub(crate) fn text(&self, id: i64) -> Result<String> {
@@ -465,6 +612,16 @@ impl History {
     }
 }
 
+fn history_page_query(before: Option<i64>) -> String {
+    let cursor_filter = if before.is_some() {
+        "AND id < :before"
+    } else {
+        ""
+    };
+    format!("SELECT id, substr(COALESCE(formatted_text, raw_text), 1, 120), source_name, datetime(created_at, 'localtime')
+        FROM dictations WHERE kind = :kind {cursor_filter} ORDER BY id DESC LIMIT :limit")
+}
+
 fn database_error(error: rusqlite::Error) -> Error {
     Error::Invalid(format!("Dictation history database: {error}"))
 }
@@ -472,6 +629,118 @@ fn database_error(error: rusqlite::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_pages_have_no_duplicates_or_missing_entries_after_an_insert() {
+        let history = History::initialize(Connection::open_in_memory().unwrap()).unwrap();
+        history.0.execute_batch("WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<302)
+            INSERT INTO dictations(raw_text,audio_samples,encoder_frames,paste_status,kind)
+            SELECT '検証用履歴 ' || n,16000,3072,'saved',CASE WHEN n%2=0 THEN 'dictation' ELSE 'transcription' END FROM rows;").unwrap();
+        let mut page = history.entries_page(HistoryKind::Dictation, None).unwrap();
+        assert!(page.has_more);
+        let first_cursor = page.entries.last().unwrap().id;
+        history
+            .save(
+                "途中で追加された履歴",
+                16000,
+                HaasVariant::Frames3072,
+                HistoryKind::Dictation,
+                None,
+                false,
+            )
+            .unwrap();
+        let mut ids = page
+            .entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        let mut sizes = vec![page.entries.len()];
+        while page.has_more {
+            let cursor = page.entries.last().unwrap().id;
+            page = history
+                .entries_page(HistoryKind::Dictation, Some(cursor))
+                .unwrap();
+            sizes.push(page.entries.len());
+            ids.extend(page.entries.iter().map(|entry| entry.id));
+        }
+        assert_eq!(sizes, vec![50, 50, 50, 1]);
+        assert_eq!(ids, (1..=151).rev().map(|n| n * 2).collect::<Vec<_>>());
+        let previous_page = history
+            .entries_page(HistoryKind::Dictation, Some(first_cursor))
+            .unwrap();
+        assert_eq!(previous_page.entries.first().unwrap().id, 202);
+        let refreshed = history.entries_page(HistoryKind::Dictation, None).unwrap();
+        assert_eq!(refreshed.entries.first().unwrap().id, 303);
+    }
+
+    #[test]
+    fn exact_page_size_has_no_empty_following_page() {
+        let history = History::initialize(Connection::open_in_memory().unwrap()).unwrap();
+        assert!(
+            !history
+                .entries_page(HistoryKind::Dictation, None)
+                .unwrap()
+                .has_more
+        );
+        history
+            .0
+            .execute_batch(
+                "WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<50)
+            INSERT INTO dictations(raw_text,audio_samples,encoder_frames,paste_status)
+            SELECT '検証用履歴',16000,3072,'saved' FROM rows;",
+            )
+            .unwrap();
+        let page = history.entries_page(HistoryKind::Dictation, None).unwrap();
+        assert_eq!(page.entries.len(), HISTORY_PAGE_SIZE);
+        assert!(!page.has_more);
+        let last = page.entries.last().unwrap().id;
+        assert!(
+            history
+                .entries_page(HistoryKind::Dictation, Some(last))
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn deep_page_seeks_the_existing_kind_and_id_index() {
+        let history = History::initialize(Connection::open_in_memory().unwrap()).unwrap();
+        let sql = format!("EXPLAIN QUERY PLAN {}", history_page_query(Some(10_000)));
+        let mut statement = history.0.prepare(&sql).unwrap();
+        let plan = statement
+            .query_map(
+                named_params! {":kind":"dictation",":before":10_000,":limit":51},
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join("\n");
+        assert!(plan.contains("dictations_by_kind"), "{plan}");
+        assert!(plan.contains("id<?") || plan.contains("rowid<?"), "{plan}");
+        assert!(!plan.contains("USE TEMP B-TREE"), "{plan}");
+    }
+
+    #[test]
+    fn history_list_fetches_only_one_page() {
+        let history = History::initialize(Connection::open_in_memory().unwrap()).unwrap();
+        history
+            .0
+            .execute_batch(
+                "WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<151)
+            INSERT INTO dictations(raw_text,audio_samples,encoder_frames,paste_status,kind)
+            SELECT '検証用履歴 ' || n,16000,3072,'saved','dictation' FROM rows;",
+            )
+            .unwrap();
+        let entries = history
+            .entries_page(HistoryKind::Dictation, None)
+            .unwrap()
+            .entries;
+        assert_eq!(entries.len(), 50);
+        assert_eq!(entries.first().unwrap().id, 151);
+        assert_eq!(entries.last().unwrap().id, 102);
+    }
 
     #[test]
     fn rejected_dictionary_validation_preserves_existing_entries() {
@@ -616,8 +885,14 @@ mod tests {
                 false,
             )
             .unwrap();
-        let dictation = history.entries(HistoryKind::Dictation).unwrap();
-        let transcription = history.entries(HistoryKind::Transcription).unwrap();
+        let dictation = history
+            .entries_page(HistoryKind::Dictation, None)
+            .unwrap()
+            .entries;
+        let transcription = history
+            .entries_page(HistoryKind::Transcription, None)
+            .unwrap()
+            .entries;
         assert_eq!(
             dictation.iter().map(|entry| entry.id).collect::<Vec<_>>(),
             vec![id]
