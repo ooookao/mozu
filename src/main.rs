@@ -1683,11 +1683,15 @@ impl Render for MozuApp {
         });
         let welcome = settings::chatgpt_welcome(self, window, cx);
         let tokens = mozu_ui::ui::utils::presentation::ComponentTheme::current(cx);
-        let title_metrics =
+        let body_metrics =
             mozu_ui::ui::utils::presentation::TextRole::Body.metrics(tokens.size, &tokens);
         div()
             .size_full()
             .font_family(theme::Theme::current(window, cx).font_sans)
+            .text_size(px(body_metrics.size))
+            .line_height(px(body_metrics.line_height))
+            .font_weight(tokens.typography.normal.weight)
+            .font_variations(tokens.typography.normal.variations())
             .text_color(theme.foreground)
             .flex()
             .child(sidebar)
@@ -1714,8 +1718,8 @@ impl Render for MozuApp {
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_size(px(title_metrics.size))
-                                    .line_height(px(title_metrics.line_height))
+                                    .text_size(px(body_metrics.size))
+                                    .line_height(px(body_metrics.line_height))
                                     .font_weight(tokens.typography.semibold.weight)
                                     .font_variations(tokens.typography.semibold.variations())
                                     .child(title),
