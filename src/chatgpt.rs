@@ -1,7 +1,10 @@
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -95,6 +98,49 @@ pub(crate) struct Model {
     pub(crate) slug: String,
     pub(crate) display_name: String,
     visibility: String,
+    #[serde(default)]
+    supported_reasoning_levels: Vec<ReasoningLevel>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+    Ultra,
+}
+
+#[derive(Clone, Deserialize)]
+struct ReasoningLevel {
+    effort: ReasoningEffort,
+}
+
+impl Model {
+    /// The SIWC picker omits `none` for some models whose public Responses API supports it.
+    /// Confirmed API capabilities: https://developers.openai.com/api/docs/guides/latest-model
+    /// and https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6.
+    pub(crate) fn minimum_reasoning(&self) -> Option<ReasoningEffort> {
+        if matches!(
+            self.slug.as_str(),
+            "gpt-6.1-terra"
+                | "gpt-6-sol"
+                | "gpt-6-luna"
+                | "gpt-5.6-sol"
+                | "gpt-5.6-terra"
+                | "gpt-5.6-luna"
+        ) {
+            return Some(ReasoningEffort::None);
+        }
+        self.supported_reasoning_levels
+            .iter()
+            .map(|level| level.effort)
+            .min()
+    }
 }
 
 #[derive(Deserialize)]
@@ -119,13 +165,19 @@ struct Claims {
     email: Option<String>,
 }
 
-pub(crate) fn client() -> Result<Client> {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(90))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("OpenAI接続を準備できません: {e}"))
+pub(crate) fn client() -> Result<&'static Client> {
+    static CLIENT: OnceLock<Result<Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(90))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| format!("OpenAI接続を準備できません: {e}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 fn checked(response: Response, operation: &str) -> Result<Response> {
@@ -258,7 +310,7 @@ pub(crate) fn sign_in(
     let id_token = tokens
         .id_token
         .ok_or("ChatGPTからIDトークンが返りませんでした")?;
-    let claims = verify_identity(&http, &id_token, issued, &nonce)?;
+    let claims = verify_identity(http, &id_token, issued, &nonce)?;
     if selected.is_some_and(|a| a.subject != claims.sub) {
         return Err("再連携したChatGPTアカウントが元のアカウントと異なります".into());
     }
@@ -563,6 +615,56 @@ pub(crate) fn response(response: Response) -> Result<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimum_reasoning_uses_catalog_order_independently_of_unknown_model_names() {
+        for (levels, expected) in [
+            (
+                r#"[{"effort":"high"},{"effort":"none"},{"effort":"low"}]"#,
+                Some("none"),
+            ),
+            (r#"[{"effort":"medium"},{"effort":"low"}]"#, Some("low")),
+            (
+                r#"[{"effort":"low"},{"effort":"minimal"}]"#,
+                Some("minimal"),
+            ),
+            ("[]", None),
+        ] {
+            let model: Model = serde_json::from_str(&format!(
+                r#"{{"slug":"arbitrary-model","display_name":"Test","visibility":"list","supported_reasoning_levels":{levels}}}"#
+            )).unwrap();
+            assert_eq!(
+                model
+                    .minimum_reasoning()
+                    .map(|effort| serde_json::to_value(effort).unwrap()),
+                expected.map(serde_json::Value::from)
+            );
+        }
+    }
+
+    #[test]
+    fn public_api_none_support_is_not_limited_by_the_siwc_picker() {
+        for slug in [
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+            "gpt-6-luna",
+            "gpt-6-sol",
+            "gpt-6.1-terra",
+            "gpt-6-astra",
+            "gpt-6.1-sol",
+        ] {
+            let model: Model = serde_json::from_str(&format!(
+                r#"{{"slug":"{slug}","display_name":"Test","visibility":"list","supported_reasoning_levels":[{{"effort":"low"}},{{"effort":"medium"}}]}}"#
+            )).unwrap();
+            let expected = if matches!(slug, "gpt-6-astra" | "gpt-6.1-sol") {
+                ReasoningEffort::Low
+            } else {
+                ReasoningEffort::None
+            };
+            assert!(model.minimum_reasoning() == Some(expected));
+        }
+    }
 
     #[test]
     fn pkce_matches_rfc7636() {

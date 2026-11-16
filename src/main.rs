@@ -453,6 +453,12 @@ impl MozuApp {
         let ai = if self.preferences.ai_enabled && !matches!(input, Input::Sample(_)) {
             Some(AiRequest {
                 model: self.chatgpt.model.clone(),
+                reasoning: self
+                    .chatgpt
+                    .models
+                    .iter()
+                    .find(|model| model.slug == self.chatgpt.model)
+                    .and_then(chatgpt::Model::minimum_reasoning),
                 prompt: self.preferences.ai_prompt.clone(),
                 client_id: self
                     .chatgpt
@@ -1031,6 +1037,7 @@ fn recognize(
 
 struct AiRequest {
     model: String,
+    reasoning: Option<chatgpt::ReasoningEffort>,
     prompt: String,
     client_id: String,
     cancelled: Arc<AtomicBool>,
@@ -1054,7 +1061,14 @@ fn publish_result(
                     "AI整形のアカウントが変更されました。録音をやり直してください".into(),
                 ));
             }
-            let result = format::clean(&vault, &ai.model, &ai.prompt, &raw, &ai.cancelled);
+            let result = format::clean(
+                &vault,
+                &ai.model,
+                ai.reasoning,
+                &ai.prompt,
+                &raw,
+                &ai.cancelled,
+            );
             if ai.cancelled.load(Ordering::SeqCst) {
                 if let Some(id) = id {
                     History::open()?.discard(id)?;

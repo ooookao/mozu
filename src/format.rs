@@ -19,6 +19,13 @@ struct Request<'a> {
     input: [Message<'a>; 1],
     store: bool,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Reasoning>,
+}
+
+#[derive(Serialize)]
+struct Reasoning {
+    effort: chatgpt::ReasoningEffort,
 }
 #[derive(Deserialize)]
 struct ApiError {
@@ -40,11 +47,12 @@ struct Event {
 pub(crate) fn clean(
     vault: &Vault,
     model: &str,
+    reasoning: Option<chatgpt::ReasoningEffort>,
     instructions: &str,
     raw: &str,
     cancelled: &AtomicBool,
 ) -> chatgpt::Result<(Vault, String)> {
-    let body = request(model, instructions, raw)?;
+    let body = request(model, reasoning, instructions, raw)?;
     if cancelled.load(Ordering::SeqCst) {
         return Err("AI整形をキャンセルしました".into());
     }
@@ -64,6 +72,7 @@ pub(crate) fn clean(
 
 fn request<'a>(
     model: &'a str,
+    reasoning: Option<chatgpt::ReasoningEffort>,
     instructions: &'a str,
     raw: &'a str,
 ) -> chatgpt::Result<Request<'a>> {
@@ -79,6 +88,7 @@ fn request<'a>(
         }],
         store: false,
         stream: true,
+        reasoning: reasoning.map(|effort| Reasoning { effort }),
     })
 }
 
@@ -147,7 +157,7 @@ mod tests {
     fn custom_prompt_and_transcript_are_sent_as_separate_fields() {
         let prompt = "箇条書きにしてください。\n固有名詞を変えないでください。";
         let body =
-            serde_json::to_value(request("test-model", prompt, "原文です").unwrap()).unwrap();
+            serde_json::to_value(request("test-model", None, prompt, "原文です").unwrap()).unwrap();
         assert_eq!(body["instructions"], prompt);
         assert_eq!(body["input"][0]["content"], "原文です");
         assert_eq!(body["input"][0]["role"], "user");
@@ -155,7 +165,22 @@ mod tests {
     }
     #[test]
     fn blank_prompt_is_rejected_before_authorization_or_network_access() {
-        assert!(request("test-model", " \n", "原文です").is_err());
+        assert!(request("test-model", None, " \n", "原文です").is_err());
+    }
+    #[test]
+    fn request_sends_the_selected_minimum_effort_and_omits_it_for_non_reasoning_models() {
+        for (effort, expected) in [
+            (Some(chatgpt::ReasoningEffort::None), Some("none")),
+            (Some(chatgpt::ReasoningEffort::Low), Some("low")),
+            (None, None),
+        ] {
+            let body = serde_json::to_value(request("test-model", effort, "清書", "原文").unwrap())
+                .unwrap();
+            match expected {
+                Some(value) => assert_eq!(body["reasoning"]["effort"], value),
+                None => assert!(body.get("reasoning").is_none()),
+            }
+        }
     }
     #[test]
     fn incomplete_and_failed_streams_never_return_partial_text() {
