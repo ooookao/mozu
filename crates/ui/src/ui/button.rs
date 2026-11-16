@@ -641,6 +641,8 @@ impl Button {
         };
         let mut content = div()
             .relative()
+            .min_w_0()
+            .max_w_full()
             .flex()
             .items_center()
             .justify_center()
@@ -659,7 +661,9 @@ impl Button {
             content = content.child(icon_slot(icon, icon_style));
         }
         if !self.icon_only {
-            content = content.when_some(self.label, |content, label| content.child(label));
+            content = content.when_some(self.label, |content, label| {
+                content.child(div().min_w_0().truncate().child(label))
+            });
         }
         content = content.children(self.children);
         if let Some(icon) = self.trailing_icon.take() {
@@ -667,6 +671,8 @@ impl Button {
         }
         let contents = div()
             .relative()
+            .min_w_0()
+            .max_w_full()
             .child(content.opacity(if self.loading { 0. } else { 1. }))
             .when(self.loading, |content| {
                 content.child(loading_spinner(
