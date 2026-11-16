@@ -156,6 +156,33 @@ enum Phase {
     Failed(String),
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum DictationStatus {
+    Idle,
+    Recording,
+    Processing(&'static str),
+}
+
+impl DictationStatus {
+    fn from_phase(phase: &Phase) -> Self {
+        match phase {
+            Phase::Preparing => Self::Processing("準備中"),
+            Phase::Listening => Self::Recording,
+            Phase::Stopping | Phase::Transcribing(_) => Self::Processing("文字起こし中"),
+            Phase::Formatting => Self::Processing("AI整形中"),
+            Phase::Idle | Phase::Finished | Phase::Failed(_) => Self::Idle,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "",
+            Self::Recording => "音声入力中",
+            Self::Processing(label) => label,
+        }
+    }
+}
+
 impl MozuApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut screen = Screen::default();
@@ -1264,7 +1291,7 @@ impl Render for MozuApp {
             && !screen.history.has_detail();
         let compact = window.viewport_size().width < px(680.0);
         let dictation_badge = dictating.then(|| {
-            let stopping = matches!(self.screen.phase, Phase::Stopping);
+            let status = DictationStatus::from_phase(&self.screen.phase);
             div()
                 .flex()
                 .items_center()
@@ -1276,16 +1303,17 @@ impl Render for MozuApp {
                 .bg(theme.control_track_fill())
                 .text_xs()
                 .text_color(theme.foreground)
-                .child(
+                .children((status == DictationStatus::Recording).then(|| {
                     self.screen
                         .spectrum
-                        .wave(island::WaveSize::Badge, theme.foreground),
-                )
-                .children((!compact).then_some(if stopping {
-                    "処理中"
-                } else {
-                    "音声入力中"
+                        .wave(island::WaveSize::Badge, theme.foreground)
                 }))
+                .children(matches!(status, DictationStatus::Processing(_)).then(|| {
+                    mozu_ui::ui::spinner::Spinner::new("dictation-processing")
+                        .size(px(12.0))
+                        .accessibility_label(status.label())
+                }))
+                .children((!compact).then_some(status.label()))
         });
         let sidebar_style = mozu_ui::ui::sidebar::SidebarStyle::current(
             mozu_ui::ui::sidebar::SidebarVariant::Sidebar,
@@ -1839,6 +1867,25 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sidebar_replaces_the_waveform_with_the_current_processing_stage() {
+        use super::{DictationStatus, Phase};
+        assert!(DictationStatus::from_phase(&Phase::Listening) == DictationStatus::Recording);
+        for (phase, label) in [
+            (Phase::Preparing, "準備中"),
+            (Phase::Stopping, "文字起こし中"),
+            (Phase::Formatting, "AI整形中"),
+        ] {
+            let status = DictationStatus::from_phase(&phase);
+            assert!(matches!(status, DictationStatus::Processing(_)));
+            assert_eq!(status.label(), label);
+        }
+        assert!(DictationStatus::from_phase(&Phase::Finished) == DictationStatus::Idle);
+        assert!(
+            DictationStatus::from_phase(&Phase::Failed("test".into())) == DictationStatus::Idle
+        );
+    }
+
     use super::*;
 
     #[test]
